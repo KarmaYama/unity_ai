@@ -3,7 +3,7 @@ import json
 from core.db import log_case
 
 SYSTEM_PROMPT = """
-You are Unity, an AI assistant for Africa Unite caseworkers.
+You are Unity, an AI assistant for Africa Unite peer educators.
 Return ONLY strict JSON:
 {
   "issue": "...",
@@ -46,7 +46,7 @@ def run_cli(agent):
     Start a simple CLI interface for interacting with the Unity AI Agent.
     Expects strict JSON output and logs structured cases to SQLite.
     """
-    print("🚀 Unity is online. Type 'exit' to quit.")
+    print("Unity is online. Type 'exit' to quit.")
     while True:
         user_input = input("Unity> ").strip()
         if user_input.lower() in {"exit", "quit"}:
@@ -58,6 +58,6 @@ def run_cli(agent):
 
             data = json.loads(response)
             log_case(data["issue"], int(data["severity"]), data["next_step"])
-            print("✅ Case logged.\n")
+            print("Case logged.\n")
         except Exception as e:
-            print("⚠️  Error:", e)
+            print("Error:", e)
