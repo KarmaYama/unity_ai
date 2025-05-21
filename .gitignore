@@ -8,3 +8,6 @@ __pycache__/
 # IDE/project files
 *.pyc
 .DS_Store
+
+ssh
+ssh.pub
