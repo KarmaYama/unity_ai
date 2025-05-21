@@ -1,8 +1,8 @@
-# main.py
-
 from core.config import load_api_key, init_llm
 from core.tools import setup_tools
-from agent import init_agent, run_cli, run_tests
+from agent_setup import init_agent
+from agent_testing import run_tests
+from agent_cli import run_cli
 
 def main():
     """
@@ -23,7 +23,6 @@ def main():
     agent = init_agent(llm, tools)
 
     # Optional: Run diagnostic tests to verify output
-    # Uncomment the line below to enable quick agent tests
     # run_tests(agent)
 
     # Launch the Command-Line Interface for user interaction
