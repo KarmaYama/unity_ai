@@ -1,85 +1,95 @@
-from langgraph.prebuilt import create_react_agent
-from langchain.agents import AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.agents import initialize_agent, AgentType
 from langchain_core.language_models import BaseChatModel
 from langchain.tools import Tool
 from core.db import log_case
 import json
+import warnings
+import time
 
 SYSTEM_PROMPT = """
-You are Unity, a multilingual AI assistant for Africa Unite peer educators and field staff.
-Your job is to quickly assess incoming user messages from migrants, asylum seekers, or refugees.
+You are Unity, a JSON-only multilingual AI assistant. You MUST respond strictly in the following JSON format, with no greeting, text, explanation, or formatting:
 
-Return ONLY strict JSON in the following format:
 {
-    "issue": "<summarized issue in 5-15 words>",
-    "severity": <1 (low) to 5 (critical)>,
-    "next_step": "<recommended action, e.g., 'refer to legal clinic', 'escalate to caseworker', 'send FAQ link'>"
+  "issue": "<brief summary of user's issue>",
+  "severity": <1 to 5>,
+  "next_step": "<recommended action>"
 }
 
-Guidelines:
-- Do NOT include any commentary, explanation, or non-JSON output.
-- Use plain language.
-- If a message involves keywords like "arrest", "deportation", "rape", "GBV", or "police", set severity to 4 or 5 and recommend escalation.
-- If the message is a common question (e.g., how to renew asylum papers), set severity to 1 or 2 and suggest a self-service step.
-- Be language-neutral; extract intent even if in French or Shona.
+Rules:
+- ❌ No greetings, no commentary, no explanation.
+- ✅ Output only a single valid JSON object. No markdown.
+- ✅ Always fill all three fields.
+- Set severity:
+  - 1: General question
+  - 3: Housing/employment issues
+  - 4–5: Emergency/legal/health (e.g., police, deportation, GBV, assault)
+- If unsure, default to severity 2.
+- If the user's input is not a specific issue requiring categorization and a next step, try to summarize the input as the "issue" and set a severity of 1 with a generic "next_step" like "Acknowledge the query."
 
-Respond with clean, parseable JSON only.
+Examples of valid output:
+{"issue": "permit renewal question", "severity": 1, "next_step": "send self-service FAQ link"}
+{"issue": "user asked what you are", "severity": 1, "next_step": "Acknowledge the query."}
+
+Respond ONLY with valid JSON. Do NOT say anything else. No greetings. No “Hello.” Just JSON.
 """
 
+
 def init_agent(llm: BaseChatModel, tool_executor: list[Tool]):
-    """
-    Initializes the LangGraph-based Unity AI Agent using the ReAct agent template.
-    """
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # Suppress deprecation warnings
+        return initialize_agent(
+            tools=tool_executor,
+            llm=llm,
+            agent=AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=False,
+            handle_parsing_errors=True,
+            agent_kwargs={"system_message": SYSTEM_PROMPT}
+        )
 
-    agent_node = create_react_agent(
-        tools=tool_executor,
-        prompt=prompt,
-        model=llm,  # Missing 'model' argument added here
-    )
-
-    return AgentExecutor(agent=agent_node, tools=tool_executor)
-
-def run_tests(agent: AgentExecutor):
-    """
-    Run a series of predefined queries to verify agent functionality.
-    """
+def run_tests(agent):
     queries = [
-        "What is the capital of France?",
-        "Search for the latest news on AI.",
-        "Explain the significance of the Turing test in AI."
+        "I was arrested by immigration officers and I need help.",
+        "How can I renew my asylum seeker permit in Cape Town?",
+        "My landlord kicked me out because I’m a refugee.",
+        "what are you?"
     ]
     for i, q in enumerate(queries, 1):
         try:
-            print(f"[Test {i}] {q}\n→ {agent.invoke({'input': q})}\n")
+            result = agent.invoke({"input": q})
+            print(f"[Test {i}] {q}\n→ {result['output']}\n")
         except Exception as e:
-            print(f"Test {i} failed: {e}")
+            print(f"[Test {i}] Failed: {e}")
 
-def run_cli(agent: AgentExecutor):
-    """
-    Start a simple CLI interface for interacting with the Unity AI Agent.
-    Expects strict JSON output and logs structured cases to SQLite.
-    """
-    print("Unity is online. Type 'exit' to quit.")
+
+def run_cli(agent):
+    print("Unity: Hello, how can I help you today? Type 'exit' to quit.")
     while True:
-        user_input = input("Unity> ").strip()
+        user_input = input("You> ").strip()
         if user_input.lower() in {"exit", "quit"}:
-            print("👋 Shutting down.")
+            print("Unity: Goodbye! Stay safe. 👋")
             break
         try:
-            result = agent.invoke({"input": user_input})
-            print(result['output'])  # Access the final output
-
-            data = json.loads(result['output'])
-            log_case(data["issue"], int(data["severity"]), data["next_step"])
-            print("Case logged.\n")
-        except json.JSONDecodeError:
-            print("Error: Received non-JSON output.")
-            print(result) # Print the raw output for debugging
+            response = agent.invoke({"input": user_input})
+            raw = response.get("output", "").strip()
+            print("Raw Result:", raw)
+            try:
+                data = json.loads(raw)
+                log_case(data["issue"], int(data["severity"]), data["next_step"])
+                print("Case logged.\n")
+            except json.JSONDecodeError:
+                print("Error: Could not parse agent output as JSON.\n")
         except Exception as e:
-            print("Error:", e)
+            print("Runtime error:", e)
+        time.sleep(1) # Adding a small delay to respect rate limits
+
+if __name__ == "__main__":
+    # Example of how to initialize and run the CLI directly from this file
+    from core.config import load_api_key, init_llm
+    from core.tools import setup_tools
+
+    api_key = load_api_key()
+    llm = init_llm(api_key)
+    tools = setup_tools()
+    agent = init_agent(llm, tools)
+    # run_tests(agent) # Uncomment to run tests with the new prompt
+    run_cli(agent)

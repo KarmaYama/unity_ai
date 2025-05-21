@@ -31,4 +31,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    print("Unity AI Assistant is starting...")
+    print("Unity AI Assistant is shutting down.")
