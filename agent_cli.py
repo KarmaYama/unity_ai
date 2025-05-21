@@ -63,4 +63,3 @@ def run_cli(agent):
             print(f"Unity: Unexpected error → {e}")
 
         time.sleep(1)
-        print("Unity: How else can I assist you? (Type 'exit' to quit)")
