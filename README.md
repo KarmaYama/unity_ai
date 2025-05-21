@@ -87,7 +87,7 @@ unity_ai/
 
 Unity AI is a project meant to grow with input from developers, educators, and community leaders. Contributions from open-source collaborators and NGOs are welcome.
 
-If you'd like to contribute, open an issue or PR — or reach out to Africa Unite directly.
+If you'd like to contribute, open an issue or PR — or reach out.
 
 ---
 
@@ -105,5 +105,4 @@ This project is licensed under the MIT License.
 * Open knowledge contributors across Africa
 
 > "Technology should unite, not divide. Unity is built with purpose — for the people, by the people."
-﻿# unity_ai
-# unity_ai
+
