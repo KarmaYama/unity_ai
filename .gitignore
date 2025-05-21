@@ -1,0 +1,10 @@
+# Environment
+.env
+
+# Virtual environment
+venv/
+__pycache__/
+
+# IDE/project files
+*.pyc
+.DS_Store
