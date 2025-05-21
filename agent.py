@@ -1,4 +1,5 @@
-from langchain.agents import initialize_agent, AgentType
+from langgraph.prebuilt import create_react_agent
+from langchain_core.prompts import SystemMessagePromptTemplate
 import json
 from core.db import log_case
 
@@ -15,16 +16,14 @@ No extra explanation or commentary.
 
 def init_agent(llm, tools):
     """
-    Initialize the Unity AI agent with specified LLM and tools.
-    Uses a Zero-Shot ReAct-based agent with a structured JSON prompt.
+    Initialize the Unity AI agent using LangGraph's ReAct agent setup.
     """
-    return initialize_agent(
-        tools=tools,
+    agent = create_react_agent(
         llm=llm,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-        system_message=SYSTEM_PROMPT
+        tools=tools,
+        system_message=SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT)
     )
+    return agent
 
 def run_tests(agent):
     """
@@ -37,7 +36,7 @@ def run_tests(agent):
     ]
     for i, q in enumerate(queries, 1):
         try:
-            print(f"[Test {i}] {q}\n→ {agent.run(q)}\n")
+            print(f"[Test {i}] {q}\n→ {agent.invoke({'input': q})['output']}\n")
         except Exception as e:
             print(f"Test {i} failed: {e}")
 
@@ -53,10 +52,11 @@ def run_cli(agent):
             print("👋 Shutting down.")
             break
         try:
-            response = agent.run(user_input)
-            print(response)
+            result = agent.invoke({"input": user_input})
+            output = result.get("output", "")
+            print(output)
 
-            data = json.loads(response)
+            data = json.loads(output)
             log_case(data["issue"], int(data["severity"]), data["next_step"])
             print("Case logged.\n")
         except Exception as e:
