@@ -11,7 +11,7 @@ def load_api_key() -> str:
 
 def init_llm(api_key: str) -> ChatGoogleGenerativeAI:
     return ChatGoogleGenerativeAI(
-        model="gemini-pro",
+        model="gemini-2.5-flash-preview-05-20",
         temperature=0,
         max_output_tokens=256,
         top_p=0.8,
