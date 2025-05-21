@@ -1,16 +1,17 @@
+# core/tools.py
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain.agents import Tool
+from langgraph.prebuilt import ToolExecutor
 
-def setup_tools() -> list[Tool]:
+def setup_tools():
     """
-    Initialize and return a list of tools available to the Unity AI Agent.
-    Currently includes DuckDuckGoSearchRun for web searching.
+    Returns a ToolExecutor containing all tools for LangGraph agents.
     """
     search = DuckDuckGoSearchRun()
-    return [
-        Tool(
-            name="DuckDuckGo Search",
-            func=search.run,
-            description="Useful for searching the web for information."
-        )
+    tools = [
+        {
+            "name": "DuckDuckGo Search",
+            "description": "Useful for searching the web for information.",
+            "func": search.run,
+        }
     ]
+    return ToolExecutor(tools)
