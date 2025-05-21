@@ -1,4 +1,4 @@
-from langchain.tools import DuckDuckGoSearchRun
+from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
 
 def setup_tools() -> list[Tool]:
