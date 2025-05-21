@@ -1,10 +1,5 @@
 # Unity AI Agent
 
-**Project Lead:** Alex M.
-**Organization:** Africa Unite (Innovation & Empowerment Division)
-**Project Type:** AI-Powered Modular Assistant
-**Status:** In Development
-
 ---
 
 ## 🌍 Vision
