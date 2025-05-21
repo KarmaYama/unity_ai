@@ -1,6 +1,8 @@
 from langgraph.prebuilt import create_react_agent
-from langgraph import AgentExecutor
-from langchain_core.prompts import SystemMessagePromptTemplate
+from langchain.agents import AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.language_models import BaseChatModel
+from langchain.tools import Tool
 from core.db import log_case
 import json
 
@@ -10,9 +12,9 @@ Your job is to quickly assess incoming user messages from migrants, asylum seeke
 
 Return ONLY strict JSON in the following format:
 {
-  "issue": "<summarized issue in 5-15 words>",
-  "severity": <1 (low) to 5 (critical)>,
-  "next_step": "<recommended action, e.g., 'refer to legal clinic', 'escalate to caseworker', 'send FAQ link'>"
+    "issue": "<summarized issue in 5-15 words>",
+    "severity": <1 (low) to 5 (critical)>,
+    "next_step": "<recommended action, e.g., 'refer to legal clinic', 'escalate to caseworker', 'send FAQ link'>"
 }
 
 Guidelines:
@@ -25,20 +27,25 @@ Guidelines:
 Respond with clean, parseable JSON only.
 """
 
-
-def init_agent(llm, tool_executor):
+def init_agent(llm: BaseChatModel, tool_executor: list[Tool]):
     """
     Initializes the LangGraph-based Unity AI Agent using the ReAct agent template.
     """
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+
     agent_node = create_react_agent(
-        system=SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
         tools=tool_executor,
-        prompt=None,  # Optional, you can use your own PromptTemplate
+        prompt=prompt,
+        model=llm,  # Missing 'model' argument added here
     )
-    
+
     return AgentExecutor(agent=agent_node, tools=tool_executor)
 
-def run_tests(agent):
+def run_tests(agent: AgentExecutor):
     """
     Run a series of predefined queries to verify agent functionality.
     """
@@ -53,7 +60,7 @@ def run_tests(agent):
         except Exception as e:
             print(f"Test {i} failed: {e}")
 
-def run_cli(agent):
+def run_cli(agent: AgentExecutor):
     """
     Start a simple CLI interface for interacting with the Unity AI Agent.
     Expects strict JSON output and logs structured cases to SQLite.
@@ -66,10 +73,13 @@ def run_cli(agent):
             break
         try:
             result = agent.invoke({"input": user_input})
-            print(result)
+            print(result['output'])  # Access the final output
 
-            data = json.loads(result)
+            data = json.loads(result['output'])
             log_case(data["issue"], int(data["severity"]), data["next_step"])
             print("Case logged.\n")
+        except json.JSONDecodeError:
+            print("Error: Received non-JSON output.")
+            print(result) # Print the raw output for debugging
         except Exception as e:
             print("Error:", e)
