@@ -2,6 +2,7 @@ from langgraph.prebuilt import create_react_agent
 from langgraph import AgentExecutor
 from langchain_core.prompts import SystemMessagePromptTemplate
 from core.db import log_case
+import json
 
 SYSTEM_PROMPT = """
 You are Unity, a multilingual AI assistant for Africa Unite peer educators and field staff.
