@@ -1,5 +1,5 @@
 from langgraph.prebuilt import create_react_agent
-from langgraph.agent import AgentExecutor
+from langgraph import AgentExecutor
 from langchain_core.prompts import SystemMessagePromptTemplate
 from core.db import log_case
 
@@ -9,7 +9,7 @@ Your job is to quickly assess incoming user messages from migrants, asylum seeke
 
 Return ONLY strict JSON in the following format:
 {
-  "issue": "<summarized issue in 5–15 words>",
+  "issue": "<summarized issue in 5-15 words>",
   "severity": <1 (low) to 5 (critical)>,
   "next_step": "<recommended action, e.g., 'refer to legal clinic', 'escalate to caseworker', 'send FAQ link'>"
 }
