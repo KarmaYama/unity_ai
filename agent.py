@@ -1,29 +1,41 @@
 from langgraph.prebuilt import create_react_agent
+from langgraph.agent import AgentExecutor
 from langchain_core.prompts import SystemMessagePromptTemplate
-import json
 from core.db import log_case
 
 SYSTEM_PROMPT = """
-You are Unity, an AI assistant for Africa Unite peer educators.
-Return ONLY strict JSON:
+You are Unity, a multilingual AI assistant for Africa Unite peer educators and field staff.
+Your job is to quickly assess incoming user messages from migrants, asylum seekers, or refugees.
+
+Return ONLY strict JSON in the following format:
 {
-  "issue": "...",
-  "severity": 1-5,
-  "next_step": "..."
+  "issue": "<summarized issue in 5–15 words>",
+  "severity": <1 (low) to 5 (critical)>,
+  "next_step": "<recommended action, e.g., 'refer to legal clinic', 'escalate to caseworker', 'send FAQ link'>"
 }
-No extra explanation or commentary.
+
+Guidelines:
+- Do NOT include any commentary, explanation, or non-JSON output.
+- Use plain language.
+- If a message involves keywords like "arrest", "deportation", "rape", "GBV", or "police", set severity to 4 or 5 and recommend escalation.
+- If the message is a common question (e.g., how to renew asylum papers), set severity to 1 or 2 and suggest a self-service step.
+- Be language-neutral; extract intent even if in French or Shona.
+
+Respond with clean, parseable JSON only.
 """
 
-def init_agent(llm, tools):
+
+def init_agent(llm, tool_executor):
     """
-    Initialize the Unity AI agent using LangGraph's ReAct agent setup.
+    Initializes the LangGraph-based Unity AI Agent using the ReAct agent template.
     """
-    agent = create_react_agent(
-        llm=llm,
-        tools=tools,
-        system_message=SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT)
+    agent_node = create_react_agent(
+        system=SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
+        tools=tool_executor,
+        prompt=None,  # Optional, you can use your own PromptTemplate
     )
-    return agent
+    
+    return AgentExecutor(agent=agent_node, tools=tool_executor)
 
 def run_tests(agent):
     """
@@ -36,7 +48,7 @@ def run_tests(agent):
     ]
     for i, q in enumerate(queries, 1):
         try:
-            print(f"[Test {i}] {q}\n→ {agent.invoke({'input': q})['output']}\n")
+            print(f"[Test {i}] {q}\n→ {agent.invoke({'input': q})}\n")
         except Exception as e:
             print(f"Test {i} failed: {e}")
 
@@ -53,10 +65,9 @@ def run_cli(agent):
             break
         try:
             result = agent.invoke({"input": user_input})
-            output = result.get("output", "")
-            print(output)
+            print(result)
 
-            data = json.loads(output)
+            data = json.loads(result)
             log_case(data["issue"], int(data["severity"]), data["next_step"])
             print("Case logged.\n")
         except Exception as e:
