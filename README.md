@@ -47,6 +47,7 @@ unity_ai/
 ├── agent_setup.py               # Entry point for CLI agent interaction
 |—— agent_testing.py
 |—— agent_cli.py
+|—— fact_sheet.py
 |—— main.py
 ├── .env                   # API key storage (DO NOT COMMIT)
 ├── README.md              # Project overview
