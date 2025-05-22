@@ -1,62 +1,87 @@
+# main.py
 from core.config import load_api_key, init_llm
 from core.tools import setup_tools
 from agent_cli import run_cli
+from agent_setup import init_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from colorama import Fore
+from langchain_core.messages import SystemMessage, HumanMessage
+import time
 
 BASE_GENERATION_SYSTEM_PROMPT = """
-You will be given context from a fact sheet. Generate a helpful answer to the user's question based on this information.
+You are Unity, a concise assistant with access to a refugee-rights fact sheet.
+Answer questions only from the fact sheet. Before replying, pause with a short “thinking…” animation.
 """
 
 BASE_REFLECTION_SYSTEM_PROMPT = """
-Critique the previous answer to ensure it is accurate, helpful, and directly answers the user's question based on the provided fact sheet context. If the answer is good, say "<OK>". Otherwise, provide specific suggestions for improvement.
+Critique the previous answer: is it accurate, helpful, and directly drawn from the fact sheet?
+If yes, respond with "<OK>". Otherwise, give one clear suggestion to improve.
 """
 
 class ReflectionAgent:
-    def __init__(self, llm: ChatGoogleGenerativeAI, n_reflect_steps=2):
+    def __init__(self, llm: ChatGoogleGenerativeAI, n_reflect_steps=1):
         self.llm = llm
         self.n_reflect_steps = n_reflect_steps
 
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        response = self.llm.invoke(messages)
-        return response.content
+    def _invoke_llm(self, messages):
+        # guard & debug
+        for m in messages:
+            if not getattr(m, "content", "").strip():
+                raise ValueError("Empty message passed to LLM")
+        print(Fore.YELLOW + f"[DEBUG] → {[(type(m).__name__, m.content[:60]+'…') for m in messages]}")
+        resp = self.llm.invoke(messages)
+        if not getattr(resp, "content", "").strip():
+            raise RuntimeError("LLM returned empty")
+        return resp.content
 
-    def reflect(self, system_prompt: str, previous_answer: str) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": previous_answer},
+    def generate(self, user_prompt: str) -> str:
+        msgs = [
+            SystemMessage(content=BASE_GENERATION_SYSTEM_PROMPT.strip()),
+            HumanMessage(content=user_prompt.strip())
         ]
-        response = self.llm.invoke(messages)
-        return response.content
+        return self._invoke_llm(msgs)
+
+    def reflect(self, previous: str) -> str:
+        msgs = [
+            SystemMessage(content=BASE_REFLECTION_SYSTEM_PROMPT.strip()),
+            HumanMessage(content=previous.strip())
+        ]
+        return self._invoke_llm(msgs)
 
     def run(self, query: str, context: str) -> str:
-        generation_prompt = f"{BASE_GENERATION_SYSTEM_PROMPT}\n\nContext:\n{context}\n\nQuestion: {query}"
-        answer = self.generate(BASE_GENERATION_SYSTEM_PROMPT, f"Context:\n{context}\n\nQuestion: {query}")
-        print(Fore.BLUE + "\nInitial Answer:", answer)
+        # simulate thinking…
+        for dots in ("thinking.", "thinking..", "thinking..."):
+            print(Fore.CYAN + f"Unity: {dots}")
+            time.sleep(0.3)
 
-        for i in range(self.n_reflect_steps):
-            reflection_prompt = f"{BASE_REFLECTION_SYSTEM_PROMPT}"
-            critique = self.reflect(reflection_prompt, answer)
-            print(Fore.GREEN + f"\nCritique ({i+1}):", critique)
-            if "<OK>" in critique:
-                break
-            # For simplicity, we're not re-generating based on critique in this basic prototype
-            # In a more advanced version, you would use the critique to refine the prompt and regenerate.
+        prompt = f"Context:\n{context}\n\nQuestion: {query}"
+        answer = self.generate(prompt)
+        print(Fore.BLUE + "Unity:", answer)
 
-        return answer # Returning the last generated answer for this prototype
+        # optional single critique pass
+        critique = self.reflect(answer)
+        if "<OK>" not in critique:
+            print(Fore.MAGENTA + "Reflection suggestion:", critique)
+        return answer
+
 
 def main():
     api_key = load_api_key()
-    llm = init_llm(api_key)
-    retriever = setup_tools(api_key, llm)
-    reflection_agent = ReflectionAgent(llm)
+    llm     = init_llm(api_key)
+    retriever = setup_tools(api_key, llm, return_retriever_only=True)
+    tools    = setup_tools(api_key, llm, return_retriever_only=False)
 
-    run_cli(None, reflection_agent=reflection_agent, fact_sheet_retriever=retriever) # Pass agents and retriever
+    reflection_agent = ReflectionAgent(llm)
+    agent = init_agent(llm, tools)
+
+    run_cli(agent, reflection_agent=reflection_agent, fact_sheet_retriever=retriever)
+
 
 if __name__ == "__main__":
-    main()
-    print("Unity AI Assistant with Reflection Agent.")
+    try:
+        main()
+    except Exception as e:
+        print(Fore.RED + f"Fatal error → {e}")
+    finally:
+        print(Fore.RESET + "Exiting Unity AI.")
+        
