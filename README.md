@@ -42,8 +42,12 @@
 unity_ai/
 ├── core/
 │   ├── config.py          # Key and LLM initialization
-│   └── tools.py           # Agent tools setup (search, etc.)
-├── agent.py               # Entry point for CLI agent interaction
+│   └── db.py
+|   └── tools.py       # Agent tools setup (search, etc.)
+├── agent_setup.py               # Entry point for CLI agent interaction
+|—— agent_testing.py
+|—— agent_cli.py
+|—— main.py
 ├── .env                   # API key storage (DO NOT COMMIT)
 ├── README.md              # Project overview
 └── requirements.txt       # Dependency list
