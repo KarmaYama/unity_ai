@@ -1,9 +1,6 @@
-# core/tools.py
 import os
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
-
-# Updated imports for local retrieval
 from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -14,14 +11,13 @@ def setup_tools(api_key: str, llm):
     # Live web search
     search = DuckDuckGoSearchRun()
 
-    # Local fact sheet retrieval
-    loader = TextLoader("./fact_sheet.txt", encoding="utf8")
+    # Load the fact sheet directly from the root directory
+    loader = TextLoader("fact_sheet.txt", encoding="utf8")
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks = splitter.split_documents(docs)
 
-    # Use HuggingFace embeddings instead of Google Palm
-    # Ensure 'sentence-transformers' is installed for this model
+    # Use HuggingFace embeddings
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
     # Vector store
@@ -45,8 +41,5 @@ def setup_tools(api_key: str, llm):
             description="Use this to answer questions about legal rights, asylum, detention, housing, health, education, employment, and emergency contacts specifically from our local fact sheet."
         )
     ]
-    return tools
-# Note: The above code assumes that the fact sheet is in a file named "fact_sheet.txt"
-# and that the HuggingFace model "all-MiniLM-L6-v2" is available.
-# Make sure to install the required libraries:
-# pip install langchain_community faiss-cpu duckduckgo-search transformers sentence-transformers
+    # Return the retriever for direct use in the reflection agent
+    return fact_qa.retriever
