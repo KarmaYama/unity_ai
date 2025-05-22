@@ -1,3 +1,5 @@
+# agent_cli.py
+
 from core.db import log_case
 import json
 import time
@@ -7,21 +9,19 @@ from colorama import Fore
 MAX_RETRIES = 5
 GREETINGS = {"hi", "hello", "hey", "hiya", "hola"}
 FACTSHEET_COMMAND = "talk to factsheet"
+BACK_COMMAND = "back"
 
 
 def smart_invoke(agent, user_input):
-    retries = 0
-    base_delay = 2  # seconds
-
+    retries, base_delay = 0, 2
     while retries < MAX_RETRIES:
         try:
             print(Fore.YELLOW + f"[DEBUG] smart_invoke sending input: {user_input}")
             return agent.invoke({"input": user_input})
         except Exception as e:
-            # rate-limit backoff
             if "429" in str(e):
                 delay = base_delay * (2 ** retries) + random.random()
-                print(Fore.RED + f"Unity: Rate limit hit. Retrying in {round(delay,2)} seconds...")
+                print(Fore.RED + f"Unity: Rate limit hit. Retrying in {round(delay,2)}s...")
                 time.sleep(delay)
                 retries += 1
             else:
@@ -29,78 +29,66 @@ def smart_invoke(agent, user_input):
     raise RuntimeError("Too many retries due to rate-limiting. Try again later.")
 
 
-def run_cli(agent, reflection_agent=None, fact_sheet_retriever=None):
-    print("Unity: Hello, how can I help you today? Type 'exit' to quit.")
-    print(f"You can also type '{FACTSHEET_COMMAND}' to interact with the fact sheet.")
+def run_cli(agent, reflection_agent=None):
+    print("Unity: Hello! Ask me anything or type 'exit' to quit.")
+    print(f"Type '{FACTSHEET_COMMAND}' to enter fact-sheet mode, or just ask directly for facts.")
 
     using_factsheet_mode = False
 
     while True:
         user_input = input("You> ").strip()
         if not user_input:
-            continue  # skip blank lines
-
+            continue
         low = user_input.lower()
 
-        # 1) Quit
+        # Exit
         if low in {"exit", "quit"}:
             print("Unity: Goodbye! Stay safe.")
             break
 
-        # 2) Friendly greeting
-        if low in GREETINGS and not using_factsheet_mode:
-            print("Unity: Please tell me about your issue so I can log it in JSON format.")
-            print("Example: 'I was stopped by police and they confiscated my ID.'\n")
+        # Exit fact-sheet mode
+        if low == BACK_COMMAND and using_factsheet_mode:
+            using_factsheet_mode = False
+            print("Unity: Exited fact-sheet mode. Back to normal operation.")
             continue
 
-        # 3) Enter fact-sheet mode
+        # Enter fact-sheet mode
         if low == FACTSHEET_COMMAND:
-            if reflection_agent and fact_sheet_retriever:
-                print("Unity: Entering fact sheet interaction mode. Ask me anything about the content.")
+            if reflection_agent:
                 using_factsheet_mode = True
+                print("Unity: Entered fact-sheet mode. Ask me anything from the fact sheet.")
             else:
-                print("Unity: Fact sheet interaction mode is not set up yet.")
+                print("Unity: Fact-sheet mode is not available.")
             continue
 
-    # 4) Fact-sheet interaction
-    if using_factsheet_mode:
-        try:
-            summary = fact_sheet_retriever.invoke(user_input)
-        except Exception as e:
-            print(Fore.RED + f"Unity (Fact Sheet): Retrieval error → {e}")
-            return
-
-        # summary is a string, so this check is safe:
-        if summary.startswith("I couldn’t find"):
-            print(Fore.CYAN + f"Unity (Fact Sheet): {summary}")
-        else:
+        # If in fact-sheet mode or if user just asks a fact question:
+        if using_factsheet_mode or reflection_agent:
             try:
-                response = reflection_agent.run(user_input, summary)
-                print(Fore.CYAN + f"Unity (Fact Sheet): {response}")
+                response = reflection_agent.run(user_input)
+                print(Fore.CYAN + f"Unity: {response}\n")
             except Exception as e:
-                print(Fore.RED + f"Unity (Fact Sheet) Unexpected error → {e}")
-        # 5) Default (case-logging) flow
+                print(Fore.RED + f"Unity (Fact Sheet): {e}\n")
+            continue
+
+        # Fallback to JSON case-logging
         try:
             ai_response = smart_invoke(agent, user_input)
             raw = ai_response.get("output", "").strip()
-
             try:
                 data = json.loads(raw)
-                # Clarification branch
                 if data.get("issue") == "Clarification required":
                     print(f"Unity: {data['next_step']}\n")
-                    return
+                    continue
 
-                # Valid case → log & display
-                issue = data["issue"]
-                severity = int(data.get("severity", 3))
-                next_step = data["next_step"]
-
-                log_case(issue, severity, next_step)
+                log_case(
+                    data["issue"],
+                    int(data.get("severity", 3)),
+                    data["next_step"]
+                )
                 print("Unity: Case logged successfully:")
-                print(f"  • Issue     → {issue}")
-                print(f"  • Severity  → {severity}")
-                print(f"  • Next Step → {next_step}\n")
+                print(f"  • Issue     → {data['issue']}")
+                print(f"  • Severity  → {data.get('severity', 3)}")
+                print(f"  • Next Step → {data['next_step']}\n")
 
             except json.JSONDecodeError:
                 print("Unity: I can only respond in JSON format. Please ask me something I can log as a case.\n")
@@ -110,4 +98,4 @@ def run_cli(agent, reflection_agent=None, fact_sheet_retriever=None):
         except Exception as e:
             print(Fore.RED + f"Unity: Unexpected error → {e}\n")
 
-        time.sleep(1)  # brief pause before next prompt
+        time.sleep(1)
