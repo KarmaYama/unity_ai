@@ -15,7 +15,7 @@ def setup_tools(api_key: str, llm):
     search = DuckDuckGoSearchRun()
 
     # Local fact sheet retrieval
-    loader = TextLoader("fact_sheet.txt", encoding="utf8")
+    loader = TextLoader("./fact_sheet.txt", encoding="utf8")
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks = splitter.split_documents(docs)
@@ -42,7 +42,6 @@ def setup_tools(api_key: str, llm):
         Tool(
             name="LocalFactSheet",
             func=lambda q: fact_qa.run(q),
-            # UPDATED: Make the description more specific to encourage tool use for rights questions
             description="Use this to answer questions about legal rights, asylum, detention, housing, health, education, employment, and emergency contacts specifically from our local fact sheet."
         )
     ]
