@@ -3,3 +3,7 @@ langchain-google-genai
 langchain-community
 duckduckgo-search
 langgraph
+sentence-transformers
+langchain-huggingface
+huggingface_hub[hf_xet]
+faiss-cpu

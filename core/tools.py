@@ -1,13 +1,12 @@
-# core/tools.py
 import os
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
 
-# NEW: imports for local retrieval
-from langchain.document_loaders import TextLoader
+# Updated imports for local retrieval
+from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import GooglePalmEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 
 def setup_tools(api_key: str, llm):
@@ -19,7 +18,11 @@ def setup_tools(api_key: str, llm):
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks = splitter.split_documents(docs)
-    embeddings = GooglePalmEmbeddings(api_key=api_key)
+
+    # Use HuggingFace embeddings instead of Google Palm
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+    # Vector store
     vectorstore = FAISS.from_documents(chunks, embeddings)
     fact_qa = RetrievalQA.from_chain_type(
         llm=llm,
@@ -41,3 +44,7 @@ def setup_tools(api_key: str, llm):
         )
     ]
     return tools
+# Note: The above code assumes that the fact sheet is in a file named "fact_sheet.txt"
+# and that the HuggingFace model "all-MiniLM-L6-v2" is available.
+# Make sure to install the required libraries:
+# pip install langchain_community faiss-cpu duckduckgo-search

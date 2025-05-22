@@ -75,4 +75,4 @@ def run_cli(agent):
         except Exception as e:
             print(f"Unity: Unexpected error → {e}\n")
 
-        time.sleep(1)
+        time.sleep(6)
