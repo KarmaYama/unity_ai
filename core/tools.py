@@ -1,3 +1,4 @@
+# core/tools.py
 import os
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
@@ -20,6 +21,7 @@ def setup_tools(api_key: str, llm):
     chunks = splitter.split_documents(docs)
 
     # Use HuggingFace embeddings instead of Google Palm
+    # Ensure 'sentence-transformers' is installed for this model
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
     # Vector store
@@ -40,11 +42,12 @@ def setup_tools(api_key: str, llm):
         Tool(
             name="LocalFactSheet",
             func=lambda q: fact_qa.run(q),
-            description="Use this to answer questions from our static fact sheet."
+            # UPDATED: Make the description more specific to encourage tool use for rights questions
+            description="Use this to answer questions about legal rights, asylum, detention, housing, health, education, employment, and emergency contacts specifically from our local fact sheet."
         )
     ]
     return tools
 # Note: The above code assumes that the fact sheet is in a file named "fact_sheet.txt"
 # and that the HuggingFace model "all-MiniLM-L6-v2" is available.
 # Make sure to install the required libraries:
-# pip install langchain_community faiss-cpu duckduckgo-search
+# pip install langchain_community faiss-cpu duckduckgo-search transformers sentence-transformers
