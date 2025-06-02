@@ -6,7 +6,10 @@ import asyncio
 import os
 import signal
 from langchain.tools import tool
-from core.tts import speak
+from core.tts import speak # speak will now internally use the Config
+
+# No direct changes needed here, as the tools themselves don't use config directly.
+# The 'speak' function they call will handle config internally.
 
 @tool
 async def open_application(app_name: str):

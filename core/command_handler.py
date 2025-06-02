@@ -1,13 +1,18 @@
+#core/command_handler.py
+
 import re
 from colorama import Fore, Style
-from core.tts import speak
+from core.tts import speak # This import is fine, speak will get config internally
 
 # Precompile regexes once:
+# These regexes are command patterns, not configurations.
+# If you wanted to make these patterns configurable, it would be a more complex change
+# involving dynamic regex compilation based on .env values. For now, they remain hardcoded.
 _WEBSITE_REGEX = re.compile(r"^open\s+website\s+(https?://\S+)", re.IGNORECASE)
-_APP_REGEX     = re.compile(r"^open\s+(.+)$",            re.IGNORECASE)
-_CLOSE_REGEX   = re.compile(r"^close\s+(.+)$",           re.IGNORECASE)
+_APP_REGEX     = re.compile(r"^open\s+(.+)$",          re.IGNORECASE)
+_CLOSE_REGEX   = re.compile(r"^close\s+(.+)$",         re.IGNORECASE)
 _WEATHER_REGEX = re.compile(r"^(?:weather(?:\s+in)?\s+)(.+)$", re.IGNORECASE)
-_SEARCH_REGEX  = re.compile(r"^search\s+(.+)$",           re.IGNORECASE)
+_SEARCH_REGEX  = re.compile(r"^search\s+(.+)$",         re.IGNORECASE)
 
 class CommandHandler:
     """
@@ -15,7 +20,7 @@ class CommandHandler:
     (open/close/get_weather/search) and LLM fallback.
     """
 
-    def __init__(self, llm, tools, search_tool, logger, chat_history, voice_flag_ref):
+    def __init__(self, llm, tools, search_tool, logger, chat_history, voice_flag_ref, config):
         """
         - llm: the language model instance
         - tools: list of LangChain tools (open_website, open_application, etc.)
@@ -23,6 +28,7 @@ class CommandHandler:
         - logger: the logger object
         - chat_history: a list for messages to keep conversation context
         - voice_flag_ref: a dict-like with key "enabled" pointing to a bool
+        - config: The Config object containing all application settings
         """
         self.llm = llm
         self.tools = tools
@@ -30,6 +36,7 @@ class CommandHandler:
         self.logger = logger
         self.chat_history = chat_history
         self.voice_flag_ref = voice_flag_ref
+        self.config = config # Store the config object
 
     async def _safe_speak(self, text: str):
         """Wrapper around TTS that doesn’t throw."""
@@ -51,11 +58,11 @@ class CommandHandler:
             self.voice_flag_ref["enabled"] = True
             print(
                 Fore.YELLOW
-                + "Zira: Voice mode enabled. Press and hold Ctrl to start listening. Press Ctrl again to stop."
+                + f"{self.config.ASSISTANT_NAME}: Voice mode enabled. Press and hold {self.config.STT_PUSH_TO_TALK_KEY} to start listening. Press {self.config.STT_PUSH_TO_TALK_KEY} again to stop."
                 + Style.RESET_ALL
             )
             await self._safe_speak(
-                "Voice mode enabled. Press and hold Control to start listening. Press Control again to stop."
+                f"Voice mode enabled. Press and hold {self.config.STT_PUSH_TO_TALK_KEY} to start listening. Press {self.config.STT_PUSH_TO_TALK_KEY} again to stop."
             )
             return True
 
@@ -63,7 +70,7 @@ class CommandHandler:
             self.voice_flag_ref["enabled"] = False
             print(
                 Fore.YELLOW
-                + "Zira: Voice mode disabled. Returning to text input."
+                + f"{self.config.ASSISTANT_NAME}: Voice mode disabled. Returning to text input."
                 + Style.RESET_ALL
             )
             await self._safe_speak("Voice mode disabled. Returning to text input.")
@@ -77,12 +84,12 @@ class CommandHandler:
             try:
                 resp = await self.tools["open_website"].ainvoke(url)
                 self.logger.debug(f"open_website response: {resp}")
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             except Exception as e:
                 self.logger.error(f"Error in open_website: {e}", exc_info=True)
                 resp = f"Sorry, I couldn't open the website {url}."
                 await self._safe_speak(resp)
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             return True
 
         # open application:
@@ -93,12 +100,12 @@ class CommandHandler:
             try:
                 resp = await self.tools["open_application"].ainvoke(app_name)
                 self.logger.debug(f"open_application response: {resp}")
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             except Exception as e:
                 self.logger.error(f"Error in open_application: {e}", exc_info=True)
                 resp = f"Sorry, I couldn't open the application {app_name}."
                 await self._safe_speak(resp)
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             return True
 
         # close application:
@@ -109,12 +116,12 @@ class CommandHandler:
             try:
                 resp = await self.tools["close_application"].ainvoke(app_to_close)
                 self.logger.debug(f"close_application response: {resp}")
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             except Exception as e:
                 self.logger.error(f"Error in close_application: {e}", exc_info=True)
                 resp = f"Sorry, I couldn't close the application {app_to_close}."
                 await self._safe_speak(resp)
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             return True
 
         # get weather (placeholder):
@@ -125,12 +132,12 @@ class CommandHandler:
             try:
                 resp = await self.tools["get_weather"].ainvoke(location)
                 self.logger.debug(f"get_weather response: {resp}")
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             except Exception as e:
                 self.logger.error(f"Error in get_weather: {e}", exc_info=True)
                 resp = f"Sorry, I couldn't retrieve weather for {location}."
                 await self._safe_speak(resp)
-                print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             return True
 
         # search:
@@ -142,17 +149,17 @@ class CommandHandler:
                 try:
                     results = await self.search_tool(query)
                     self.logger.debug(f"DuckDuckGo Search response: {results}")
-                    print(Fore.CYAN + f"Zira: {results}" + Style.RESET_ALL)
+                    print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {results}" + Style.RESET_ALL)
                     await self._safe_speak(results)
                 except Exception as e:
                     self.logger.error(f"Error in DuckDuckGo Search: {e}", exc_info=True)
                     resp = "Sorry, I couldn't perform the search."
                     await self._safe_speak(resp)
-                    print(Fore.CYAN + f"Zira: {resp}" + Style.RESET_ALL)
+                    print(Fore.CYAN + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             else:
                 resp = "The search tool is not available."
                 await self._safe_speak(resp)
-                print(Fore.YELLOW + f"Zira: {resp}" + Style.RESET_ALL)
+                print(Fore.YELLOW + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             return True
 
         # Fallback: LLM
@@ -164,27 +171,22 @@ class CommandHandler:
         Sends `command_text` to the LLM with a system prompt,
         appends to chat_history, and speaks/prints the response.
         """
-        from core.tts import speak  # safe_speak already imported
         from langchain.schema import HumanMessage, AIMessage, SystemMessage
         try:
             messages = [
                 SystemMessage(
-                    content=(
-                        "You are Zira, a highly sophisticated and intelligent AI. You engage "
-                        "in conversations naturally, providing thoughtful and intelligent responses. You have a "
-                        "subtle wit and avoid robotic language. Strive for eloquence and depth."
-                    )
+                    content=self.config.ASSISTANT_SYSTEM_PROMPT # Use system prompt from config
                 ),
                 HumanMessage(content=command_text),
             ]
             response = await self.llm.ainvoke(messages)
             text = response.content
-            print(Fore.CYAN + f"Zira says: {text}" + Style.RESET_ALL)
+            print(Fore.CYAN + f"{self.config.ASSISTANT_NAME} says: {text}" + Style.RESET_ALL)
             await self._safe_speak(text)
             self.chat_history.append(HumanMessage(content=command_text))
             self.chat_history.append(AIMessage(content=text))
         except Exception as e:
             self.logger.error(f"LLM fallback error: {e}", exc_info=True)
-            resp = "There was an issue communicating with Zira."
-            print(Fore.RED + f"Zira: {resp}" + Style.RESET_ALL)
+            resp = f"There was an issue communicating with {self.config.ASSISTANT_NAME}."
+            print(Fore.RED + f"{self.config.ASSISTANT_NAME}: {resp}" + Style.RESET_ALL)
             await self._safe_speak(resp)

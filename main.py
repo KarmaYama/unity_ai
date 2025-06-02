@@ -1,13 +1,14 @@
+#main.py
+
 import asyncio
-import os
-import re
 from colorama import Fore, Style
 
-from core.config import load_api_key, init_llm
+# Import the new Config class
+from core.config import Config
 from core.logger_config import setup_logger
 from core.command_handler import CommandHandler
 from core.voice_listener import listen_for_voice
-from core.tts import speak
+from core.tts import speak # Keep speak for direct usage in main for initial greeting
 from tools.system_tools import (
     open_application,
     open_website,
@@ -17,21 +18,31 @@ from tools.system_tools import (
 from tools.agent_tools import setup_tools
 
 # ----------------------------------------
+# Initialize Configuration
+# ----------------------------------------
+config = Config()
+
+# ----------------------------------------
 # Bootstrap logger
 # ----------------------------------------
-logger = setup_logger("zira_logger")
+# Pass the config object to setup_logger
+logger = setup_logger(config)
 
 # ----------------------------------------
 # Main entrypoint
 # ----------------------------------------
 async def main():
-    api_key = load_api_key()
-    llm = init_llm(api_key)
-    tools = setup_tools(api_key, llm)
+    # Load LLM using the config object
+    llm = config.init_llm()
+    # Pass the config object to setup_tools
+    tools = setup_tools(config, llm)
 
     # Extract search if available
     search_tool = None
     for t in tools:
+        # Note: The tool name "DuckDuckGo Search" is hardcoded here.
+        # If you wanted to make this configurable, you'd add it to .env
+        # and retrieve it from config.
         if t.name == "DuckDuckGo Search":
             search_tool = t.func
             break
@@ -41,6 +52,7 @@ async def main():
     chat_history = []
 
     # Map tool names to their functions (for convenience inside CommandHandler)
+    # These are still hardcoded as they represent the internal mapping of available tools.
     tool_map = {
         "open_application": open_application,
         "open_website": open_website,
@@ -55,17 +67,17 @@ async def main():
         logger=logger,
         chat_history=chat_history,
         voice_flag_ref=voice_flag,
+        config=config # Pass the config object to CommandHandler
     )
 
     print(
         Fore.GREEN
-        + "Zira is ready. Type 'enable voice mode' to use voice, or type your command:"
+        + f"{config.ASSISTANT_NAME} is ready. Type 'enable voice mode' to use voice, or type your command:"
         + Style.RESET_ALL
     )
     try:
-        await handler._safe_speak(
-            "Hello, I am Zira. Type 'enable voice mode' to use voice commands, or type your command."
-        )
+        # Use the greeting from config
+        await handler._safe_speak(config.ASSISTANT_GREETING)
     except Exception:
         pass  # ignore if TTS fails
 
@@ -77,8 +89,8 @@ async def main():
 
         low = command.lower()
         if low in ["exit", "quit", "goodbye"]:
-            bye = "Goodbye!"
-            print(Fore.GREEN + f"Zira: {bye}" + Style.RESET_ALL)
+            bye = config.ASSISTANT_FAREWELL # Use farewell from config
+            print(Fore.GREEN + f"{config.ASSISTANT_NAME}: {bye}" + Style.RESET_ALL)
             await handler._safe_speak(bye)
             break
 
@@ -92,6 +104,7 @@ async def main():
             await listen_for_voice(
                 voice_flag_ref=voice_flag,
                 process_command_fn=handler.process_command,
+                config=config # Pass config to voice_listener
             )
 
     logger.debug("Session ended.")
@@ -102,9 +115,11 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         # If user hits Ctrl+C during main, say goodbye
-        asyncio.run(speak("Session terminated. Goodbye."))
+        # Use farewell from config
+        asyncio.run(speak(f"Session terminated. {config.ASSISTANT_FAREWELL}"))
     except Exception as e:
-        logger.error(f"Fatal error during Zira startup or execution: {e}", exc_info=True)
+        logger.error(f"Fatal error during {config.ASSISTANT_NAME} startup or execution: {e}", exc_info=True)
         print(Fore.RED + f"Fatal error: {e}" + Style.RESET_ALL)
     finally:
-        print(Fore.RESET + "Exiting Zira." + Style.RESET_ALL)
+        # Use assistant name from config
+        print(Fore.RESET + f"Exiting {config.ASSISTANT_NAME}." + Style.RESET_ALL)
