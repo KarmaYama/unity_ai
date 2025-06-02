@@ -7,3 +7,6 @@ sentence-transformers
 langchain-huggingface
 huggingface_hub[hf_xet]
 faiss-cpu
+SpeechRecognition 
+keyboard
+pyaudio

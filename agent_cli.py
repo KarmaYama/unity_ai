@@ -1,5 +1,4 @@
 # agent_cli.py
-
 from core.db import log_case
 import json
 import time
@@ -8,8 +7,8 @@ from colorama import Fore
 
 MAX_RETRIES = 5
 GREETINGS = {"hi", "hello", "hey", "hiya", "hola"}
-FACTSHEET_COMMAND = "talk to factsheet"
-BACK_COMMAND = "back"
+# FACTSHEET_COMMAND = "talk to factsheet" # Removed
+BACK_COMMAND = "back" # Potentially not needed now
 
 
 def smart_invoke(agent, user_input):
@@ -29,11 +28,11 @@ def smart_invoke(agent, user_input):
     raise RuntimeError("Too many retries due to rate-limiting. Try again later.")
 
 
-def run_cli(agent, reflection_agent=None):
+def run_cli(agent, reflection_agent=None): # reflection_agent might not be needed in the main loop now
     print("Unity: Hello! Ask me anything or type 'exit' to quit.")
-    print(f"Type '{FACTSHEET_COMMAND}' to enter fact-sheet mode, or just ask directly for facts.")
+    # print(f"Type '{FACTSHEET_COMMAND}' to enter fact-sheet mode, or just ask directly for facts.") # Removed
 
-    using_factsheet_mode = False
+    # using_factsheet_mode = False # Removed
 
     while True:
         user_input = input("You> ").strip()
@@ -46,31 +45,22 @@ def run_cli(agent, reflection_agent=None):
             print("Unity: Goodbye! Stay safe.")
             break
 
-        # Exit fact-sheet mode
-        if low == BACK_COMMAND and using_factsheet_mode:
-            using_factsheet_mode = False
-            print("Unity: Exited fact-sheet mode. Back to normal operation.")
-            continue
+        # # Exit fact-sheet mode # Removed
+        # if low == BACK_COMMAND and using_factsheet_mode:
+        #     using_factsheet_mode = False
+        #     print("Unity: Exited fact-sheet mode. Back to normal operation.")
+        #     continue
 
-        # Enter fact-sheet mode
-        if low == FACTSHEET_COMMAND:
-            if reflection_agent:
-                using_factsheet_mode = True
-                print("Unity: Entered fact-sheet mode. Ask me anything from the fact sheet.")
-            else:
-                print("Unity: Fact-sheet mode is not available.")
-            continue
+        # # Enter fact-sheet mode # Removed
+        # if low == FACTSHEET_COMMAND:
+        #     if reflection_agent:
+        #         using_factsheet_mode = True
+        #         print("Unity: Entered fact-sheet mode. Ask me anything from the fact sheet.")
+        #     else:
+        #         print("Unity: Fact-sheet mode is not available.")
+        #     continue
 
-        # If in fact-sheet mode or if user just asks a fact question:
-        if using_factsheet_mode or reflection_agent:
-            try:
-                response = reflection_agent.run(user_input)
-                print(Fore.CYAN + f"Unity: {response}\n")
-            except Exception as e:
-                print(Fore.RED + f"Unity (Fact Sheet): {e}\n")
-            continue
-
-        # Fallback to JSON case-logging
+        # # If in fact-sheet mode or if user just asks a fact question: # Modified to just use the main agent
         try:
             ai_response = smart_invoke(agent, user_input)
             raw = ai_response.get("output", "").strip()
@@ -86,12 +76,12 @@ def run_cli(agent, reflection_agent=None):
                     data["next_step"]
                 )
                 print("Unity: Case logged successfully:")
-                print(f"  • Issue     → {data['issue']}")
-                print(f"  • Severity  → {data.get('severity', 3)}")
+                print(f"  • Issue   → {data['issue']}")
+                print(f"  • Severity → {data.get('severity', 3)}")
                 print(f"  • Next Step → {data['next_step']}\n")
 
             except json.JSONDecodeError:
-                print("Unity: I can only respond in JSON format. Please ask me something I can log as a case.\n")
+                print("Unity: I can only respond in JSON format. Please ask me something I can log as a case, or a factual question.\n") # Updated message
 
         except RuntimeError as e:
             print(Fore.RED + f"Unity: {e}\n")

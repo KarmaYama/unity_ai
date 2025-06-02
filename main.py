@@ -1,113 +1,220 @@
+import asyncio
+import os
+import logging
+import re
+from datetime import datetime
+from colorama import Fore, Style
+import keyboard  # For detecting alt key press
+
 from core.config import load_api_key, init_llm
-from core.tools import setup_tools, build_memory
-from agent_cli import run_cli
-from agent_setup import init_agent
-from langchain_google_genai import ChatGoogleGenerativeAI
-from colorama import Fore
-from langchain_core.documents import Document
-from langchain_core.messages import SystemMessage, HumanMessage
-import time
+from core.tts import speak
+from core.stt import transcribe_from_push_to_talk
+from tools.system_tools import open_application, open_website, get_weather
+from tools.agent_tools import setup_tools
 
-BASE_GENERATION_SYSTEM_PROMPT = """
-You are Unity, a concise assistant with access to a refugee-rights fact sheet.
-Answer questions only from the fact sheet. Before replying, pause with a short “thinking…” animation.
-"""
-
-BASE_REFLECTION_SYSTEM_PROMPT = """
-Critique the previous answer: is it accurate, helpful, and directly drawn from the fact sheet?
-If yes, respond with "<OK>". Otherwise, give one clear suggestion to improve.
-"""
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 
-class ReflectionAgent:
-    def __init__(self, llm: ChatGoogleGenerativeAI, memory_retriever, n_reflect_steps=1):
-        self.llm = llm
-        self.retriever = memory_retriever
-        self.n_reflect_steps = n_reflect_steps
+# ----------------------------------------
+# Setup a timestamped logger for each session
+# ----------------------------------------
 
-    def _invoke_llm(self, messages):
-        # ensure messages have content
-        for m in messages:
-            if not getattr(m, "content", "").strip():
-                print(Fore.RED + "[ERROR] Empty message passed to LLM:", m)
-                raise ValueError("Empty message passed to LLM")
-        # debug print full prompt
-        prompt_preview = " | ".join(m.content.replace("\n", " ")[:200] for m in messages)
-        print(Fore.YELLOW + f"[DEBUG] Prompt to LLM: {prompt_preview}...")
-        resp = self.llm.invoke(messages)
-        content = getattr(resp, "content", None)
-        if not content or not content.strip():
-            print(Fore.RED + "[ERROR] LLM returned empty response.")
-            return None
-        return content
+# Create log directory if not exists
+log_dir = "log"
+os.makedirs(log_dir, exist_ok=True)
 
-    def generate(self, prompt_messages):
-        resp = self._invoke_llm(prompt_messages)
-        if resp is None:
-            return "Sorry, I couldn't find that information."
-        return resp
+# Dynamic file name with timestamp
+log_filename = os.path.join(log_dir, f"zira_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-    def reflect(self, previous: str) -> None:
-        msgs = [
-            SystemMessage(content=BASE_REFLECTION_SYSTEM_PROMPT.strip()),
-            HumanMessage(content=previous.strip())
-        ]
-        critique = self._invoke_llm(msgs)
-        if critique and "<OK>" not in critique:
-            print(Fore.MAGENTA + "Reflection suggestion:", critique)
+logger = logging.getLogger("zira_logger")
+logger.setLevel(logging.DEBUG)
 
-    def run(self, query: str) -> str:
-        # Retrieve relevant fact-sheet chunks
-        docs = self.retriever.invoke(query)
-        if not docs:
-            print(Fore.RED + "Unity: No relevant facts found. Try rephrasing.")
-            return "I couldn't find relevant facts."
+file_handler = logging.FileHandler(log_filename, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
 
-        # Combine and debug-print memory
-        memory = "\n\n".join(d.page_content for d in docs)
-        print(Fore.YELLOW + f"[DEBUG] Retrieved memory (first 500 chars):\n{memory[:500]}{'...' if len(memory)>500 else ''}\n")
+formatter = logging.Formatter(
+    "%(asctime)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
-        # Simulate thinking
-        for dots in ("thinking.", "thinking..", "thinking..."):
-            print(Fore.CYAN + f"Unity: {dots}")
-            time.sleep(0.3)
+# ----------------------------------------
+# Regex patterns for direct tool‐invocation
+# ----------------------------------------
+_WEBSITE_REGEX = re.compile(r"^open\s+website\s+(https?://\S+)", re.IGNORECASE)
+_APP_REGEX = re.compile(r"^open\s+(.+)$", re.IGNORECASE)
+_WEATHER_REGEX = re.compile(r"^(?:weather(?:\s+in)?\s+)(.+)$", re.IGNORECASE)
+_SEARCH_REGEX = re.compile(r"^search\s+(.+)$", re.IGNORECASE)
 
-        # Build main prompt
-        system = SystemMessage(content=BASE_GENERATION_SYSTEM_PROMPT.strip())
-        human = HumanMessage(content=f"Memory:\n{memory}\n\nQuestion: {query}")
-        answer = self.generate([system, human])
-        print(Fore.BLUE + "Unity:", answer)
+async def safe_speak(text: str):
+    try:
+        await speak(text)
+    except Exception as tts_error:
+        logger.error(f"TTS Error: {tts_error}", exc_info=True)
 
-        # Reflection step
-        try:
-            self.reflect(answer)
-        except Exception as e:
-            print(Fore.RED + f"Reflection failed: {e}")
-
-        return answer
-
-
-def main():
+async def main():
     api_key = load_api_key()
     llm = init_llm(api_key)
+    tools = setup_tools(api_key, llm)
+    search_tool = None
+    for tool in tools:
+        if tool.name == "DuckDuckGo Search":
+            search_tool = tool.func
+            break
 
-    # Build neural memory retriever
-    memory_retriever = build_memory(api_key)
+    voice_mode_enabled = False
 
-    # Tools for other queries
-    tools = setup_tools(api_key, llm, return_retriever_only=False)
+    print(Fore.GREEN + "Zira is ready. Type 'enable voice mode' to use voice, or type your command:")
+    await safe_speak("Hello, I am Zira. Type 'enable voice mode' to use voice commands, or type your command.")
 
-    reflection_agent = ReflectionAgent(llm, memory_retriever)
-    agent = init_agent(llm, tools)
+    chat_history = []
 
-    run_cli(agent, reflection_agent=reflection_agent)
+    async def process_command(command_text: str):
+        nonlocal voice_mode_enabled
+        logger.debug(f"User command: {command_text}")
 
+        if command_text.lower() == "enable voice mode":
+            voice_mode_enabled = True
+            print(Fore.YELLOW + "Zira: Voice mode enabled. Press and hold Alt to speak." + Style.RESET_ALL)
+            await safe_speak("Voice mode enabled. Press and hold Alt to speak.")
+            return True
+        elif command_text.lower() == "disable voice mode":
+            voice_mode_enabled = False
+            print(Fore.YELLOW + "Zira: Voice mode disabled. Returning to text input." + Style.RESET_ALL)
+            await safe_speak("Voice mode disabled. Returning to text input.")
+            return True
+
+        website_match = _WEBSITE_REGEX.match(command_text)
+        if website_match:
+            url = website_match.group(1)
+            logger.debug(f"Direct invocation: open_website('{url}')")
+            try:
+                response_text = await open_website.ainvoke(url)
+                logger.debug(f"open_website response: {response_text}")
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            except Exception as e:
+                logger.error(f"Error in open_website('{url}'): {e}", exc_info=True)
+                response_text = f"Sorry, I couldn't open the website {url}."
+                await safe_speak(response_text)
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            return True
+
+        app_match = _APP_REGEX.match(command_text)
+        if app_match:
+            app_name = app_match.group(1).strip()
+            logger.debug(f"Direct invocation: open_application('{app_name}')")
+            try:
+                response_text = await open_application.ainvoke(app_name)
+                logger.debug(f"open_application response: {response_text}")
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            except Exception as e:
+                logger.error(f"Error in open_application('{app_name}'): {e}", exc_info=True)
+                response_text = f"Sorry, I couldn't open the application {app_name}."
+                await safe_speak(response_text)
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            return True
+
+        weather_match = _WEATHER_REGEX.match(command_text)
+        if weather_match:
+            location = weather_match.group(1).strip()
+            logger.debug(f"Direct invocation: get_weather('{location}')")
+            try:
+                response_text = await get_weather.ainvoke(location)
+                logger.debug(f"get_weather response: {response_text}")
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            except Exception as e:
+                logger.error(f"Error in get_weather('{location}'): {e}", exc_info=True)
+                response_text = f"Sorry, I couldn't retrieve weather for {location}."
+                await safe_speak(response_text)
+                print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            return True
+
+        search_match = _SEARCH_REGEX.match(command_text)
+        if search_match:
+            query = search_match.group(1).strip()
+            if search_tool:
+                logger.debug(f"Direct invocation: DuckDuckGo Search('{query}')")
+                try:
+                    search_results = await search_tool(query)
+                    logger.debug(f"DuckDuckGo Search response: {search_results}")
+                    print(Fore.CYAN + f"Zira: {search_results}" + Style.RESET_ALL)
+                    await safe_speak(search_results)
+                except Exception as e:
+                    logger.error(f"Error during DuckDuckGo Search('{query}'): {e}", exc_info=True)
+                    response_text = f"Sorry, I couldn't perform the search."
+                    await safe_speak(response_text)
+                    print(Fore.CYAN + f"Zira: {response_text}" + Style.RESET_ALL)
+            else:
+                await safe_speak("The search tool is not available.")
+                print(Fore.YELLOW + "Zira: The search tool is not available." + Style.RESET_ALL)
+            return True
+
+        try:
+            messages = [
+                SystemMessage(content="You are Zira, a highly sophisticated and intelligent AI. You engage in conversations with a human in a way that feels natural and insightful, much like a very knowledgeable human companion. Your responses are articulate, thoughtful, and demonstrate a deep understanding of the topic at hand. While you are helpful, your primary mode is conversational, aiming for a human-like exchange rather than simply acting as an assistant who only answers questions directly. You possess a subtle wit and can weave in relevant insights or perspectives to enrich the conversation. Avoid overly simplistic or robotic language. Strive for eloquence and depth in your interactions."),
+                HumanMessage(content=command_text)
+            ]
+            response = await llm.ainvoke(messages)
+            print(Fore.CYAN + f"Zira says: {response.content}" + Style.RESET_ALL)
+            await safe_speak(response.content)
+            chat_history.append(HumanMessage(content=command_text))
+            chat_history.append(AIMessage(content=response.content))
+            return True
+        except Exception as e:
+            logger.error(f"Error during LLM invocation (fallback): {e}", exc_info=True)
+            print(Fore.RED + f"Error with Zira (fallback): {e}" + Style.RESET_ALL)
+            await safe_speak("There was an issue communicating with Zira.")
+            return True
+        return False
+
+    async def listen_for_voice():
+        while True:
+            if voice_mode_enabled and keyboard.is_pressed('alt'):
+                print(Fore.MAGENTA + "Listening for voice command..." + Style.RESET_ALL)
+                await safe_speak("Listening.")
+                voice_command = await transcribe_from_push_to_talk()
+                if voice_command:
+                    print(Fore.MAGENTA + f"Voice command: {voice_command}" + Style.RESET_ALL)
+                    await process_command(voice_command)
+                    # Briefly pause to avoid rapid re-triggering
+                    await asyncio.sleep(0.3)
+            await asyncio.sleep(0.1)
+
+    # Start listening for voice in the background
+    asyncio.create_task(listen_for_voice())
+
+    while True:
+        try:
+            command = input(Fore.WHITE + "You> " + Style.RESET_ALL).strip()
+            if not command:
+                continue
+
+            if command.lower() in ["exit", "quit", "goodbye"]:
+                await safe_speak("Goodbye.")
+                print(Fore.GREEN + "Zira: Goodbye!" + Style.RESET_ALL)
+                break
+
+            await process_command(command)
+
+        except KeyboardInterrupt:
+            await safe_speak("Session terminated. Goodbye.")
+            print(Fore.GREEN + "\nZira: Session terminated by user." + Style.RESET_ALL)
+            break
+
+        except Exception as e:
+            logger.error(f"Error during main loop: {e}", exc_info=True)
+            error_msg = "Zira: Sorry, something went wrong in the main loop."
+            print(Fore.RED + error_msg + Style.RESET_ALL)
+            await safe_speak("Sorry, something went wrong.")
+
+    logger.debug("Session ended.")
+    logger.handlers.clear()
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except Exception as e:
-        print(Fore.RED + f"Fatal error → {e}")
+        logger.error(f"Fatal error during Zira startup or execution: {e}", exc_info=True)
+        print(Fore.RED + f"Fatal error: {e}" + Style.RESET_ALL)
     finally:
-        print(Fore.RESET + "Exiting Unity AI.")
-        print(Fore.RESET + "Goodbye!")
+        print(Fore.RESET + "Exiting Zira." + Style.RESET_ALL)

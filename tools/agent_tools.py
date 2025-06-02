@@ -1,5 +1,4 @@
-# core/tools.py
-
+# tools/agent_tools.py
 import os
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
@@ -11,10 +10,7 @@ from langchain.chains import RetrievalQA
 
 
 def build_memory(api_key: str):
-    """
-    Load the fact sheet, chunk it, embed it, and return a FAISS retriever
-    that will serve as Unity’s 'neural brain'.
-    """
+    """Load the fact sheet, chunk it, embed it, and return a FAISS retriever."""
     loader = TextLoader("fact_sheet.txt", encoding="utf8")
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
@@ -26,16 +22,8 @@ def build_memory(api_key: str):
 
 
 def setup_tools(api_key: str, llm, return_retriever_only=False):
-    """
-    Returns:
-      - If return_retriever_only=False: a list of Tools for the main agent (web search + LocalFactSheet QA).
-      - If return_retriever_only=True: just the retriever (for backward compatibility).
-    """
-    # 1) Live web search
+    """Returns a list of Tools for the main agent."""
     search = DuckDuckGoSearchRun()
-
-    # 2) Full QA chain over the same vectorstore
-    #    (useful if you want a 'LocalFactSheet' tool alongside memory-based QA)
     memory_retriever = build_memory(api_key)
     fact_qa = RetrievalQA.from_chain_type(
         llm=llm,
