@@ -24,7 +24,7 @@ def _sanitize_text(text: str) -> str:
     - Convert "1:" "2:" etc. into "1." "2." so the engine will pause naturally.
     - Remove common Unicode emojis so they are not spoken.
     """
-    sanitized = text.replace("*", "")
+    sanitized = text.replace("*" "#","" "")
     sanitized = re.sub(r"(?m)(\d+):", r"\1.", sanitized)
     emoji_pattern = re.compile(
         "["

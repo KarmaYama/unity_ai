@@ -4,11 +4,8 @@ import speech_recognition as sr
 import keyboard
 import asyncio
 import pyaudio
-from core.tts import speak # This import is fine, speak will get config internally
-from core.config import Config # Import Config to get settings
-
-# Global config instance (assuming it's initialized in main and passed down)
-# For this module, we'll assume it's passed into the functions that need it.
+from core.tts import speak
+from core.config import Config
 
 def find_microphone_index(preferred_names: list):
     """
@@ -65,10 +62,8 @@ async def transcribe_from_push_to_talk(push_key='ctrl', config: Config = None):
     Does NOT re-prompt — assumes you’ve already been told “press and hold Ctrl to speak.”
     Now accepts a Config object to get preferred mics and push key.
     """
-    # Use config for preferred mics and push key, with fallbacks for testing
     if config:
         preferred_mics = config.STT_PREFERRED_MICS
-        push_key = config.STT_PUSH_TO_TALK_KEY
     else:
         preferred_mics = [
             "Realtek(R) Audio",
@@ -76,20 +71,17 @@ async def transcribe_from_push_to_talk(push_key='ctrl', config: Config = None):
             "Microphone",
             "Hands-Free HF Audio"
         ]
-        push_key = 'ctrl' # Default if config is not provided (e.g., for direct script execution)
 
     mic_index = find_microphone_index(preferred_mics)
-
-    # Immediately start waiting for Ctrl; do not print or speak any additional prompts here.
     loop = asyncio.get_event_loop()
     transcription_event = asyncio.Event()
     transcribed_text = None
 
     def on_key_event(e):
-        # Trigger on key-down of the specified push_key if event isn't already set
+        # Trigger on key-down of any Ctrl key if event isn't already set
         if (
             e.event_type == 'down'
-            and e.name.lower() == push_key.lower() # Compare with configured push_key
+            and e.name.lower() in ['ctrl', 'left ctrl', 'right ctrl']
             and not transcription_event.is_set()
         ):
             loop.call_soon_threadsafe(transcription_event.set)
@@ -97,15 +89,11 @@ async def transcribe_from_push_to_talk(push_key='ctrl', config: Config = None):
     keyboard.hook(on_key_event)
 
     try:
-        # Wait for push_key-down
         await transcription_event.wait()
         transcription_event.clear()
-
-        # Once push_key is detected, record and transcribe
         text = await listen_and_transcribe(mic_index)
         if text:
             transcribed_text = text
-
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
@@ -115,9 +103,8 @@ async def transcribe_from_push_to_talk(push_key='ctrl', config: Config = None):
 
 if __name__ == '__main__':
     async def main():
-        # For testing, create a dummy config or load it
-        test_config = Config() # This will load from .env if it exists
-        print(f"Testing speech-to-text. Press and hold {test_config.STT_PUSH_TO_TALK_KEY} to speak.")
+        test_config = Config()
+        print(f"Testing speech-to-text. Press and hold Ctrl to speak.")
         spoken_text = await transcribe_from_push_to_talk(config=test_config)
         if spoken_text:
             print(f"You said: {spoken_text}")
