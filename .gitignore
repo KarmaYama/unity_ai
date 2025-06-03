@@ -13,3 +13,7 @@ ssh
 ssh.pub
 logs/
 log/
+faiss_index/
+
+fact_sheet_index.pkl.faiss
+fact_sheet_index.pkl.pkl

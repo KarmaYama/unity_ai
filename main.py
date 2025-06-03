@@ -3,12 +3,11 @@
 import asyncio
 from colorama import Fore, Style
 
-# Import the new Config class
 from core.config import Config
 from core.logger_config import setup_logger
 from core.command_handler import CommandHandler
 from core.voice_listener import listen_for_voice
-from core.tts import speak # Keep speak for direct usage in main for initial greeting
+from core.tts import speak, set_tts_config 
 from tools.system_tools import (
     open_application,
     open_website,
@@ -21,6 +20,7 @@ from tools.agent_tools import setup_tools
 # Initialize Configuration
 # ----------------------------------------
 config = Config()
+set_tts_config(config)
 
 # ----------------------------------------
 # Bootstrap logger

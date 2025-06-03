@@ -1,5 +1,3 @@
-# tools/agent_tools.py
-
 import os
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
@@ -12,16 +10,28 @@ from core.config import Config # Import Config to get settings
 
 # Define the directory for saving the FAISS index
 FAISS_INDEX_PATH = "faiss_index"
-FAISS_INDEX_FILENAME = "fact_sheet_index"
+FAISS_INDEX_NAME = "fact_sheet_index" # Renamed for clarity, consistent with LangChain's param name
 
 def build_memory(config: Config):
     """Load/load and save the fact sheet embeddings using FAISS."""
     embeddings = HuggingFaceEmbeddings(model_name=config.AGENT_EMBEDDING_MODEL)
-    faiss_file_path = os.path.join(FAISS_INDEX_PATH, FAISS_INDEX_FILENAME)
 
-    if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(f"{faiss_file_path}.pkl"):
+    # Construct full paths for the expected FAISS files
+    faiss_file = os.path.join(FAISS_INDEX_PATH, f"{FAISS_INDEX_NAME}.faiss")
+    pkl_file = os.path.join(FAISS_INDEX_PATH, f"{FAISS_INDEX_NAME}.pkl")
+
+    # Check for the existence of both the .faiss and .pkl files within the directory
+    if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(faiss_file) and os.path.exists(pkl_file):
         print("[INFO] Loading existing FAISS index...")
-        vectorstore = FAISS.load_local(FAISS_INDEX_PATH, embeddings, file_path=f"{faiss_file_path}.pkl")
+        # IMPORTANT SECURITY NOTE:
+        # Setting allow_dangerous_deserialization=True is necessary because FAISS.load_local()
+        # relies on loading a pickle file (.pkl). Pickle files can execute arbitrary code.
+        # This is considered 'safe' in this specific context ONLY IF:
+        # 1. You are the sole creator of the 'faiss_index' files.
+        # 2. These files are stored locally and never sourced from untrusted origins.
+        # 3. These files are not shared with others who might modify them maliciously.
+        # If any of these conditions are not met, this poses a security risk.
+        vectorstore = FAISS.load_local(FAISS_INDEX_PATH, embeddings, index_name=FAISS_INDEX_NAME, allow_dangerous_deserialization=True)
         return vectorstore.as_retriever(search_kwargs={"k": config.AGENT_RETRIEVER_K})
     else:
         print("[INFO] Creating new FAISS index...")
@@ -34,7 +44,8 @@ def build_memory(config: Config):
         chunks = splitter.split_documents(docs)
         vectorstore = FAISS.from_documents(chunks, embeddings)
         os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
-        vectorstore.save_local(FAISS_INDEX_PATH, index_name=f"{FAISS_INDEX_FILENAME}.pkl") # Changed to index_name
+        # Save using the directory path and the index_name
+        vectorstore.save_local(FAISS_INDEX_PATH, index_name=FAISS_INDEX_NAME)
         print(f"[INFO] FAISS index saved to {FAISS_INDEX_PATH}")
         return vectorstore.as_retriever(search_kwargs={"k": config.AGENT_RETRIEVER_K})
 
