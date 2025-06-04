@@ -17,3 +17,7 @@ faiss_index/
 
 fact_sheet_index.pkl.faiss
 fact_sheet_index.pkl.pkl
+bookmarks.json
+bookmarks.json.bak
+data
+database
