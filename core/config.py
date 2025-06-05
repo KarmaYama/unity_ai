@@ -61,7 +61,7 @@ class Config:
             "ASSISTANT_GREETING",
             "Systems online. I am Zira. How may I assist you today, Alex? Type 'enable voice mode' when you're ready to speak to me."
         )
-        self.ASSISTANT_FAREWELL = self._get_env_var("ASSISTANT_FAREWELL", "Going silent. You know where I am if you need me.")
+        self.ASSISTANT_FAREWELL = self._get_env_var("ASSISTANT_FAREWELL", "Going silent. You know where to find me, if you need me.")
         self.ASSISTANT_SYSTEM_PROMPT = self._get_env_var(
             "ASSISTANT_SYSTEM_PROMPT",
             (
