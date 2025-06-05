@@ -1,4 +1,4 @@
-# core/tts.py
+#core/tts.py
 
 import asyncio
 import os
@@ -7,49 +7,52 @@ import tempfile
 import uuid
 import stat
 import logging
+import platform
 import pyttsx3
 from colorama import Fore, Style
 from core.config import Config
+from core.logger_config import setup_logger  # To get a shared logger
 
 try:
     import edge_tts
 except ImportError:
     edge_tts = None
 
-# Global config instance (will be set by set_tts_config from main.py)
-_config = None
+# Module‐level placeholders for config and logger; set by set_tts_config()
+_config: Config | None = None
+_logger: logging.Logger | None = None
 
-def _get_logger() -> logging.Logger:
-    """
-    Attempt to grab the shared logger from the application.
-    Falls back to root logger if setup_logger is not yet configured.
-    """
-    try:
-        from core.logger_config import setup_logger
-        cfg = Config()
-        return setup_logger(cfg)
-    except Exception:
-        return logging.getLogger()
 
 def set_tts_config(config_instance: Config):
-    """Sets the global config instance for the TTS module."""
-    global _config
+    """
+    Initializes the module‐level Config and Logger for TTS.
+    Must be called once (e.g., from main.py) before using speak().
+    """
+    global _config, _logger
+
     _config = config_instance
+    _logger = setup_logger(config_instance, name="tts_logger")  # Shared logger for all TTS calls
+
 
 def _sanitize_text(text: str) -> str:
     """
-    Sanitizes text to improve TTS pronunciation by removing symbols and emoticons.
+    Sanitizes text to improve TTS pronunciation by removing symbols, emoticons,
+    and trimming excessive length.
     """
-    # Remove unwanted symbols
-    symbols_to_remove_pattern = re.compile(r'[\\#@&%$*+=<>/|~^`\[\]{}]+')
-    sanitized = symbols_to_remove_pattern.sub("", text)
+    # Trim to a reasonable max length (e.g., 1000 chars)
+    if len(text) > 1000:
+        text = text[:1000] + "…"
+
+    # Remove unwanted symbols (common punctuation that confuses TTS)
+    symbols_pattern = re.compile(r'[\\#@&%$*+=<>/|~^`\[\]{}]+')
+    sanitized = symbols_pattern.sub("", text)
 
     # Convert "1:" "2:" etc. into "1." "2."
     sanitized = re.sub(r"(?m)(\d+):", r"\1.", sanitized)
 
     # Remove Unicode emojis/emoticons
     emoji_pattern = re.compile(
-        "["
+        "[" 
         "\U0001F600-\U0001F64F"
         "\U0001F300-\U0001F5FF"
         "\U0001F680-\U0001F6FF"
@@ -66,59 +69,81 @@ def _sanitize_text(text: str) -> str:
     )
     sanitized = emoji_pattern.sub("", sanitized)
 
-    # Remove common text-based emoticons
-    text_emoticons_to_remove = {
-        ':)', ':-D', ':D', ':(', ':-(', ';)', ':P', ':-P', ':O', ':-O', '<3', 'xD',
-        ':|', ':-|', ':*', ':-*', ':/', ':-/', ':\\', ':-\\'
+    # Remove common text‐based emoticons
+    emoticons = {
+        ":)", ":-D", ":D", ":(", ":-(", ";)", ":P", ":-P", ":O", ":-O", "<3", "xD",
+        ":|", ":-|", ":*", ":-*", ":/", ":-/", ":\\", ":-\\"
     }
-    for emo in text_emoticons_to_remove:
+    for emo in emoticons:
         sanitized = sanitized.replace(emo, "")
 
     # Collapse multiple whitespace/newlines into a single space
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-
     return sanitized
+
 
 async def speak(text: str):
     """
-    Converts text to speech using Edge-TTS, with pyttsx3 as a fallback.
-    Uses a secure temporary file for each speech output, then deletes it.
-    """
-    logger = _get_logger()
+    Converts text to speech using Edge‐TTS (if installed and configured),
+    with pyttsx3 as a fallback. Generates a secure temp file, plays it,
+    and cleans it up.
 
-    if not _config:
-        logger.error("TTS config not set. Cannot speak.")
-        print(Fore.RED + "TTS config not set. Cannot speak." + Style.RESET_ALL)
+    This function never blocks the event loop for more than the TTS
+    generation and playback itself. Fallback to pyttsx3 is offloaded
+    to a thread if needed.
+    """
+    global _config, _logger
+    if _config is None or _logger is None:
+        # Config not set; cannot proceed
+        print(Fore.RED + "TTS: Configuration not initialized. Call set_tts_config() first." + Style.RESET_ALL)
+        return
+    
+    # Crucial: Check if TTS is globally enabled via the config object
+    if not _config.TTS_ENABLED:
+        _logger.debug("TTS is disabled by configuration. Skipping speech.")
         return
 
+    logger = _logger
     safe_text = _sanitize_text(text)
 
-    # Choose engine: Edge-TTS or pyttsx3
-    if edge_tts is None or _config.TTS_ENGINE.lower() == 'pyttsx3':
-        logger.info("Using pyttsx3 fallback for TTS.")
-        _speak_pyttsx3_fallback(safe_text, _config.TTS_PYTTSX3_VOICES)
+    # Choose engine
+    use_pyttsx3 = (
+        (edge_tts is None) or 
+        (_config.TTS_ENGINE.lower() == "pyttsx3")
+    )
+
+    if use_pyttsx3:
+        logger.info("Using pyttsx3 fallback TTS.")
+        # Offload synchronous pyttsx3 to a thread
+        await asyncio.to_thread(_speak_pyttsx3_fallback, safe_text, logger)
         return
 
-    # Create a secure named temporary file for the mp3
+    # At this point, edge_tts is available and config asks for it
+    # Create a secure temp file for the mp3 output
+    temp_audio_file = None
     try:
-        tmp = tempfile.NamedTemporaryFile(prefix="zira_tts_", suffix=".mp3", delete=False)
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="zira_tts_",
+            suffix=".mp3",
+            delete=False
+        )
         temp_audio_file = tmp.name
         tmp.close()
-        # Restrict permissions to owner read/write only
         os.chmod(temp_audio_file, stat.S_IRUSR | stat.S_IWUSR)
     except Exception as e:
-        logger.error("Failed to create secure temporary file for TTS: %s", e, exc_info=True)
-        print(Fore.RED + "Could not create temporary file for TTS." + Style.RESET_ALL)
-        _speak_pyttsx3_fallback(safe_text, _config.TTS_PYTTSX3_VOICES)
+        logger.error("TTS: Failed to create temp file: %s", e, exc_info=True)
+        # Fallback to pyttsx3 if we cannot write temp
+        await asyncio.to_thread(_speak_pyttsx3_fallback, safe_text, logger)
         return
 
+    # Generate speech via Edge‐TTS
     try:
-        # Generate speech to temp file using configured Edge voice
         voice_name = _config.TTS_EDGE_VOICE_NAME
-        communicate = edge_tts.Communicate(safe_text, voice_name)
-        await communicate.save(temp_audio_file)
+        communicator = edge_tts.Communicate(safe_text, voice_name)
+        await communicator.save(temp_audio_file)
 
-        # Play via ffplay (FFmpeg). -nodisp hides video, -autoexit closes when done.
+        # Play the file using ffplay if available
+        # Use a short timeout: if ffplay isn't installed, FileNotFoundError triggers fallback
         process = await asyncio.create_subprocess_exec(
             "ffplay",
             "-nodisp",
@@ -130,50 +155,55 @@ async def speak(text: str):
         await process.wait()
 
     except FileNotFoundError:
-        logger.warning("ffplay not found. Falling back to pyttsx3.")
-        print(Fore.RED + "ffplay not found. Falling back to pyttsx3." + Style.RESET_ALL)
-        _speak_pyttsx3_fallback(safe_text, _config.TTS_PYTTSX3_VOICES)
+        logger.warning("TTS: 'ffplay' not found. Falling back to pyttsx3.")
+        print(Fore.YELLOW + "ffplay not found; using pyttsx3 fallback." + Style.RESET_ALL)
+        await asyncio.to_thread(_speak_pyttsx3_fallback, safe_text, logger)
 
     except Exception as e:
-        logger.error("Error during Edge-TTS playback: %s", e, exc_info=True)
-        print(Fore.RED + f"TTS playback error: {e}" + Style.RESET_ALL)
+        logger.error("TTS: Edge‐TTS error: %s", e, exc_info=True)
+        print(Fore.RED + f"Edge‐TTS playback error: {e}" + Style.RESET_ALL)
         print(Fore.YELLOW + "Falling back to pyttsx3 TTS." + Style.RESET_ALL)
-        _speak_pyttsx3_fallback(safe_text, _config.TTS_PYTTSX3_VOICES)
+        await asyncio.to_thread(_speak_pyttsx3_fallback, safe_text, logger)
 
     finally:
-        # Attempt to delete the temporary file
-        try:
-            if os.path.exists(temp_audio_file):
+        # Always attempt to remove the temp file
+        if temp_audio_file and os.path.exists(temp_audio_file):
+            try:
                 os.remove(temp_audio_file)
-                logger.debug("Temporary TTS file removed: %s", temp_audio_file)
-        except Exception as e:
-            logger.warning("Could not remove temp TTS file %s: %s", temp_audio_file, e)
+                logger.debug("TTS: Removed temp file %s", temp_audio_file)
+            except Exception as e:
+                logger.warning("TTS: Could not remove temp file %s: %s", temp_audio_file, e)
 
-def _speak_pyttsx3_fallback(text: str, preferred_voices: list):
+
+def _speak_pyttsx3_fallback(text: str, logger: logging.Logger):
     """
-    Fallback function for TTS using pyttsx3.
-    The input text is assumed to have been sanitized already.
+    Synchronous fallback TTS using pyttsx3. Chooses engine based on OS.
     """
-    logger = _get_logger()
     try:
-        engine = pyttsx3.init("sapi5")  # 'sapi5' for Windows, 'nsss' for macOS, 'espeak' for Linux
-        voices = engine.getProperty("voices")
-        selected_voice = None
-        for voice in voices:
-            for preferred in preferred_voices:
-                if preferred.lower() in voice.name.lower():
-                    selected_voice = voice.id
-                    break
-            if selected_voice:
-                break
+        # Select engine based on platform
+        system = platform.system().lower()
+        if system == "windows":
+            engine = pyttsx3.init("sapi5")
+        elif system == "darwin":
+            engine = pyttsx3.init("nsss")
+        else:
+            engine = pyttsx3.init("espeak")
 
-        if selected_voice:
-            engine.setProperty("voice", selected_voice)
+        # Optionally choose a preferred voice if available
+        voices = engine.getProperty("voices")
+        selected = None
+        for voice in voices:
+            # Search for any substring match in the voice name
+            if _config.TTS_EDGE_VOICE_NAME.lower() in voice.name.lower():
+                selected = voice.id
+                break
+        if selected:
+            engine.setProperty("voice", selected)
 
         engine.say(text)
         engine.runAndWait()
-        logger.info("pyttsx3 spoke text successfully.")
+        logger.info("TTS (pyttsx3) spoke text successfully.")
     except Exception as e:
-        logger.error("Error in pyttsx3 TTS fallback: %s", e, exc_info=True)
-        print(Fore.RED + "Error in pyttsx3 TTS fallback." + Style.RESET_ALL)
-        print(Fore.RED + "Please ensure pyttsx3 is installed and configured." + Style.RESET_ALL)
+        logger.error("TTS: pyttsx3 fallback error: %s", e, exc_info=True)
+        print(Fore.RED + "Error in pyttsx3 TTS fallback. Ensure pyttsx3 is installed." + Style.RESET_ALL)
+

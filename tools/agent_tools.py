@@ -1,5 +1,11 @@
 import os
 import re
+import hashlib         # For SHA256 hashing
+import json            # For saving/loading hashes
+import tempfile        # For atomic file writes
+from pathlib import Path
+from typing import Optional, Union
+
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.agents import Tool
 from langchain_community.document_loaders import TextLoader
@@ -7,207 +13,336 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
-from core.config import Config # Import Config to get settings
-# from core.security.security_utils import is_path_secure_and_within_root # If you have a separate module for this
 
-# Directory/filenames for FAISS index
-# SECURITY NOTE: These paths are relative to the execution directory.
-# In a production environment, ensure this path is secured and writable
-# only by the application user.
-# IMPORTANT CHANGE: Adjust FAISS_INDEX_PATH to be relative to _ALLOWED_DATA_ROOT
-FAISS_INDEX_SUBDIR = "faiss_index" # Define just the subdirectory name
-FAISS_INDEX_NAME = "zira_database"    # Define the FAISS index base name (change as needed)
+from core.config import Config     # To load API keys, paths, etc.
 
 
-# Define an allowed root directory for the fact sheet and FAISS index
-# This is a critical security control against path traversal.
-# You MUST configure this to a specific, non-sensitive directory.
-# Example: '/var/lib/zira/data' or 'C:\ProgramData\Zira\Data'
-_ALLOWED_DATA_ROOT = os.path.abspath(os.path.join(os.getcwd(), "data")) # Default to a 'data' subfolder in current working dir
-# SECURITY NOTE: Replace os.getcwd() with a fixed, secure, and non-user-writable
-# directory path in a production deployment, e.g., '/opt/zira/data'.
+# -----------------------------------------------------------------------------
+# SECURITY: In production, set this to a fixed, root-owned directory (non-user-writable),
+# e.g. "/opt/zira/data" or "C:\\ProgramData\\Zira\\data". 
+# Do NOT use os.getcwd() in production.
+# -----------------------------------------------------------------------------
+_config = Config()
+_ALLOWED_DATA_ROOT = os.path.abspath(
+    os.getenv("ZIRA_DATA_ROOT", os.path.join(os.getcwd(), "data"))
+)
+# Make absolutely sure _ALLOWED_DATA_ROOT cannot be changed at runtime by normal users
+_ALLOWED_DATA_ROOT = os.path.realpath(_ALLOWED_DATA_ROOT)
 
-def _is_safe_path(base_path: str, proposed_path: str, logger) -> bool:
+
+# FAISS index subfolder and filenames
+FAISS_INDEX_SUBDIR = "faiss_index"
+FAISS_INDEX_NAME = "zira_database"
+FAISS_HASH_FILE_NAME = f"{FAISS_INDEX_NAME}.hash"
+
+
+def _is_safe_path(
+    base_path: Union[str, Path], 
+    proposed_path: Union[str, Path], 
+    logger
+) -> bool:
     """
-    Validates if a proposed_path is canonicalized and falls within the base_path.
-    Prevents path traversal attacks (e.g., via '..', symlinks).
+    Validates that 'proposed_path' is within 'base_path' after resolving symlinks
+    and does not contain any '..' segments. Prevents path traversal attacks.
     """
-    if not proposed_path:
-        logger.error("Proposed path is empty.")
-        return False
-
     try:
-        abs_base_path = os.path.abspath(base_path)
-        abs_proposed_path = os.path.abspath(proposed_path)
+        abs_base = Path(base_path).resolve(strict=False)
+        abs_prop = Path(proposed_path).resolve(strict=False)
     except Exception as e:
-        logger.error(f"Error canonicalizing path: {e}")
+        logger.error(f"Error resolving paths: {e}", exc_info=False)
         return False
 
-    if ".." in abs_proposed_path.split(os.sep):
-        logger.warning(f"Path traversal attempt detected: {proposed_path}")
-        return False
-
+    # If any parent of abs_prop is not under abs_base, it’s invalid
     try:
-        resolved_proposed_path = os.path.realpath(abs_proposed_path)
-    except Exception as e:
-        logger.error(f"Error resolving real path for {proposed_path}: {e}")
-        return False
-
-    if not resolved_proposed_path.startswith(os.path.realpath(abs_base_path)):
-        logger.warning(f"Path '{proposed_path}' resolves to '{resolved_proposed_path}' which is outside allowed base '{abs_base_path}'.")
+        abs_prop.relative_to(abs_base)
+    except Exception:
+        logger.warning(
+            f"Path '{proposed_path}' resolves to '{abs_prop}', which is outside allowed base '{abs_base}'."
+        )
         return False
 
     return True
 
 
-def build_memory(config: Config, logger) -> "FAISS.Retriever":
+def _calculate_file_hash(filepath: Union[str, Path]) -> Optional[str]:
     """
-    Loads (or creates) a FAISS vectorstore from the local fact‐sheet.
-    Returns a Retriever with search_kwargs={'k': config.AGENT_RETRIEVER_K}.
+    Calculates the SHA256 hash of a file. Returns None if file not found.
     """
-    embeddings = HuggingFaceEmbeddings(model_name=config.AGENT_EMBEDDING_MODEL)
+    path = Path(filepath)
+    if not path.is_file():
+        return None
 
-    # Construct the full, expected path for FAISS index, relative to _ALLOWED_DATA_ROOT
-    # This ensures the FAISS index is always placed inside the 'data' directory.
-    FAISS_FULL_INDEX_PATH = os.path.join(_ALLOWED_DATA_ROOT, FAISS_INDEX_SUBDIR)
+    hasher = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+    except Exception:
+        return None
 
-    # Validate FAISS index paths using the constructed full path
-    if not _is_safe_path(_ALLOWED_DATA_ROOT, FAISS_FULL_INDEX_PATH, logger):
-        # This error should now ideally not be hit if FAISS_FULL_INDEX_PATH is correctly formed
-        raise ValueError(f"FAISS index path '{FAISS_FULL_INDEX_PATH}' is not secure or outside allowed data root.")
-    
-    faiss_file = os.path.join(FAISS_FULL_INDEX_PATH, f"{FAISS_INDEX_NAME}.faiss")
-    pkl_file = os.path.join(FAISS_FULL_INDEX_PATH, f"{FAISS_INDEX_NAME}.pkl")
+    return hasher.hexdigest()
+
+
+def _atomic_write_json(data: dict, target_path: Union[str, Path], logger) -> None:
+    """
+    Writes a JSON file atomically by writing to a temporary file first,
+    then renaming to the final location.
+    """
+    target = Path(target_path)
+    temp_dir = target.parent
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=temp_dir, delete=False
+        ) as tmp:
+            json.dump(data, tmp, ensure_ascii=False, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_name = tmp.name
+        # Atomic replace (POSIX and Windows compatible)
+        os.replace(tmp_name, str(target))
+        logger.info(f"Atomic write succeeded for hash file '{target}'.")
+    except Exception as e:
+        logger.error(f"Failed to write JSON atomically to '{target}': {e}", exc_info=True)
+        # If atomic write fails, attempt a normal write as a fallback
+        try:
+            with target.open("w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.warning(
+                f"Atomic write failed; performed non-atomic write to '{target}'. Potential risk of corruption."
+            )
+        except Exception as e2:
+            logger.error(f"Fallback non-atomic write also failed for '{target}': {e2}", exc_info=True)
+
+
+def _save_hashes(
+    faiss_file: Union[str, Path], 
+    pkl_file: Union[str, Path], 
+    hash_file_path: Union[str, Path], 
+    logger
+) -> None:
+    """
+    Calculates SHA256 for both the FAISS index and its .pkl metadata file,
+    then writes them to 'hash_file_path' (atomically).
+    """
+    faiss_hash = _calculate_file_hash(faiss_file)
+    pkl_hash   = _calculate_file_hash(pkl_file)
+
+    if faiss_hash is None or pkl_hash is None:
+        logger.error(
+            f"Cannot compute hashes: "
+            f"FAISS file='{faiss_file}', PKL file='{pkl_file}'. At least one is missing."
+        )
+        return
+
+    hashes = {"faiss_hash": faiss_hash, "pkl_hash": pkl_hash}
+    _atomic_write_json(hashes, hash_file_path, logger)
+
+
+def _verify_hashes(
+    faiss_file: Union[str, Path], 
+    pkl_file: Union[str, Path], 
+    hash_file_path: Union[str, Path], 
+    logger
+) -> bool:
+    """
+    Loads stored hashes from 'hash_file_path' and compares against current file hashes.
+    Returns True if both match; False otherwise (indicating rebuild is needed).
+    """
+    hash_path = Path(hash_file_path)
+    if not hash_path.is_file():
+        logger.warning(f"Hash file '{hash_file_path}' not found. Forcing FAISS rebuild.")
+        return False
 
     try:
-        # If both the .faiss and .pkl exist, we assume an index is already built
-        if os.path.exists(FAISS_FULL_INDEX_PATH) and os.path.exists(faiss_file) and os.path.exists(pkl_file):
-            logger.info("Loading existing FAISS index from '%s'.", FAISS_FULL_INDEX_PATH)
-            
-            # SECURITY WARNING: allow_dangerous_deserialization=True
-            # This flag is DANGEROUS if you cannot guarantee the integrity
-            # of your FAISS index files (faiss_index/*.faiss and *.pkl).
-            # An attacker who can write to FAISS_FULL_INDEX_PATH could inject
-            # malicious code into the .pkl file that executes on load.
-            # ONLY set this to True if you have stringent filesystem permissions
-            # and integrity checks on FAISS_FULL_INDEX_PATH and its contents.
-            # In a high-security environment, consider alternative serialization
-            # methods or strong cryptographic integrity checks on these files.
-            # For this project, assuming self-generated and trusted files.
+        stored = json.loads(hash_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error(f"Failed to read/parse hash file '{hash_file_path}': {e}", exc_info=False)
+        return False
+
+    current_faiss_hash = _calculate_file_hash(faiss_file)
+    current_pkl_hash   = _calculate_file_hash(pkl_file)
+    if current_faiss_hash is None or current_pkl_hash is None:
+        logger.warning("FAISS or PKL file is missing during hash verification. Forcing rebuild.")
+        return False
+
+    if (
+        stored.get("faiss_hash") == current_faiss_hash and
+        stored.get("pkl_hash")   == current_pkl_hash
+    ):
+        logger.info("FAISS index integrity verified (hashes match).")
+        return True
+
+    logger.warning(
+        "Hash mismatch detected! FAISS file or PKL file may have been tampered or corrupted. Forcing rebuild."
+    )
+    return False
+
+
+def build_memory(config: Config, logger) -> "FAISS.Retriever":
+    """
+    Loads or creates a FAISS vectorstore from the local fact-sheet. Returns Retriever.
+    Raises if the fact sheet is missing or paths are invalid.
+    """
+    # 1) Ensure the data root is secure
+    if not _is_safe_path(_ALLOWED_DATA_ROOT, _ALLOWED_DATA_ROOT, logger):
+        raise ValueError(f"Configured data root '{_ALLOWED_DATA_ROOT}' is invalid or not secure.")
+
+    # 2) Define full index directory
+    faiss_dir = os.path.join(_ALLOWED_DATA_ROOT, FAISS_INDEX_SUBDIR)
+    faiss_file = os.path.join(faiss_dir, f"{FAISS_INDEX_NAME}.faiss")
+    pkl_file   = os.path.join(faiss_dir, f"{FAISS_INDEX_NAME}.pkl")
+    hash_file  = os.path.join(faiss_dir, FAISS_HASH_FILE_NAME)
+
+    # 3) If index directory exists, verify its safety
+    if os.path.isdir(faiss_dir):
+        if not _is_safe_path(_ALLOWED_DATA_ROOT, faiss_dir, logger):
+            raise ValueError(f"FAISS directory '{faiss_dir}' is outside the allowed data root.")
+    else:
+        try:
+            # Create with restrictive permissions (owner rwx only)
+            os.makedirs(faiss_dir, exist_ok=True, mode=0o700)
+            logger.info(f"Created FAISS directory at '{faiss_dir}' with mode 0o700.")
+        except Exception as e:
+            logger.error(f"Failed to create FAISS directory '{faiss_dir}': {e}", exc_info=True)
+            raise
+
+    # 4) Check for existing files + verify hashes
+    files_exist = (
+        os.path.isfile(faiss_file) 
+        and os.path.isfile(pkl_file) 
+        and os.path.isfile(hash_file)
+    )
+
+    if files_exist and _verify_hashes(faiss_file, pkl_file, hash_file, logger):
+        logger.info(f"Loading existing FAISS index from '{faiss_dir}'.")
+        try:
+            # WARNING: allow_dangerous_deserialization=True is required by LangChain but is risky.
+            # Ensure that no untrusted user can overwrite these files.
             vectorstore = FAISS.load_local(
-                FAISS_FULL_INDEX_PATH,
-                embeddings,
+                faiss_dir,
+                HuggingFaceEmbeddings(model_name=config.AGENT_EMBEDDING_MODEL),
                 index_name=FAISS_INDEX_NAME,
                 allow_dangerous_deserialization=True
             )
             return vectorstore.as_retriever(search_kwargs={"k": config.AGENT_RETRIEVER_K})
+        except Exception as e:
+            logger.error(f"Error loading FAISS from '{faiss_dir}': {e}", exc_info=True)
+            # Fall through to rebuild
+    else:
+        if files_exist:
+            logger.warning("Existing FAISS files detected but hash verification failed; rebuilding.")
+        else:
+            logger.info("No valid FAISS index found; building new index.")
 
-        # Otherwise, create a new FAISS index
-        logger.info("Creating new FAISS index at '%s'.", FAISS_FULL_INDEX_PATH)
+    # 5) Validate fact-sheet path
+    fact_path = config.AGENT_FACT_SHEET_PATH
+    if not _is_safe_path(_ALLOWED_DATA_ROOT, fact_path, logger):
+        raise ValueError(f"Fact sheet path '{fact_path}' is outside allowed data root.")
 
-        # Validate the fact sheet file path before loading
-        if not _is_safe_path(_ALLOWED_DATA_ROOT, config.AGENT_FACT_SHEET_PATH, logger):
-            raise ValueError(f"Fact sheet path '{config.AGENT_FACT_SHEET_PATH}' is not secure or outside allowed data root.")
+    if not os.path.isfile(fact_path):
+        logger.error(f"Fact sheet not found at '{fact_path}'. Cannot build FAISS index.")
+        raise FileNotFoundError(f"Missing fact sheet file: {fact_path}")
 
-        if not os.path.exists(config.AGENT_FACT_SHEET_PATH):
-            logger.error(
-                "Fact sheet file not found at '%s'. Cannot build FAISS index.",
-                config.AGENT_FACT_SHEET_PATH
-            )
-            raise FileNotFoundError(f"Missing fact sheet: {config.AGENT_FACT_SHEET_PATH}")
-
-        # Input Validation: TextLoader expects a file path. No direct user input here.
-        loader = TextLoader(config.AGENT_FACT_SHEET_PATH, encoding="utf8")
+    # 6) Load documents, split, and index
+    try:
+        loader = TextLoader(fact_path, encoding="utf8")
         docs = loader.load()
-
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=config.AGENT_TEXT_SPLITTER_CHUNK_SIZE,
             chunk_overlap=config.AGENT_TEXT_SPLITTER_CHUNK_OVERLAP
         )
         chunks = splitter.split_documents(docs)
 
+        embeddings = HuggingFaceEmbeddings(model_name=config.AGENT_EMBEDDING_MODEL)
         vectorstore = FAISS.from_documents(chunks, embeddings)
 
-        # Ensure the directory exists, then save
-        # SECURITY NOTE: os.makedirs(exist_ok=True) is safe for directory creation.
-        # Permissions for created directories should be restricted (e.g., 0o700).
-        # Python's default for os.makedirs doesn't set specific permissions for new directories,
-        # so consider setting umask or explicitly using os.chmod if not running in a container
-        # with controlled permissions.
-        os.makedirs(FAISS_FULL_INDEX_PATH, exist_ok=True) # Use the full path for creation
-        vectorstore.save_local(FAISS_FULL_INDEX_PATH, index_name=FAISS_INDEX_NAME) # Use the full path for saving
+        # Save index (with restrictive permissions)
+        vectorstore.save_local(
+            faiss_dir, 
+            index_name=FAISS_INDEX_NAME
+        )
+        # The `save_local` call typically writes `<faiss>.faiss` and `<faiss>.pkl`.
+        # Fix file permissions so only the owner can read/write:
+        try:
+            os.chmod(faiss_file, 0o600)
+            os.chmod(pkl_file,   0o600)
+        except Exception as e:
+            logger.warning(f"Failed to set restrictive permissions on FAISS files: {e}")
 
-        logger.info("FAISS index created and saved to '%s'.", FAISS_FULL_INDEX_PATH)
+        # 7) Compute and save hashes
+        _save_hashes(faiss_file, pkl_file, hash_file, logger)
+
+        logger.info(f"FAISS index built and saved under '{faiss_dir}'.")
         return vectorstore.as_retriever(search_kwargs={"k": config.AGENT_RETRIEVER_K})
 
     except Exception as e:
-        logger.error("Error building/loading FAISS index: %s", e, exc_info=True)
-        # Fail-secure: Re-raise to prevent agent from operating with a corrupted or missing index.
+        logger.error(f"Error building FAISS index: {e}", exc_info=True)
         raise
 
 
 def setup_tools(config: Config, llm, logger=None) -> list[Tool]:
     """
-    Returns a list of LangChain Tools for your agent:
-      - "DuckDuckGo Search" (live web search)
-      - "LocalFactSheet" (answers from your local fact sheet via FAISS + RetrievalQA)
+    Returns a list of LangChain Tools:
+      1. duckduckgo_search (live web search)
+      2. local_factsheet (answers from local fact-sheet via FAISS + RetrievalQA)
     """
-
-    # Ensure we have a logger to record FAISS status
     if logger is None:
-        # In case setup_tools is called outside of main, create a temporary logger
         from core.logger_config import setup_logger as _setup
         logger = _setup(config)
 
-    # 1) DuckDuckGo for live search
-    # SECURITY NOTE: DuckDuckGoSearchRun is generally safe as it abstracts the
-    # search query. However, for a production environment, ensure:
-    # - Rate-limiting: Implement client-sided rate-limiting to prevent excessive API calls.
-    # - HTTPS Enforcement: The underlying library should enforce HTTPS.
-    # - Error Handling: Robust handling of network errors, timeouts, and rate limits.
-    search = DuckDuckGoSearchRun()
+    # 1) DuckDuckGo Search with a short timeout
+    try:
+        ddg = DuckDuckGoSearchRun(timeout=5)  # 5s timeout to avoid hanging
+    except TypeError:
+        # Some versions of DuckDuckGoSearchRun may not support timeout param;
+        # fallback to default behavior but log a warning.
+        ddg = DuckDuckGoSearchRun()
+        logger.warning("DuckDuckGoSearchRun does not support timeout parameter; proceeding without timeout.")
 
-    # 2) Build or load FAISS memory retriever
+    # 2) Build or load local FAISS retriever
     memory_retriever = build_memory(config, logger)
 
-    # 3) Wrap the retriever in a RetrievalQA chain
-    # SECURITY NOTE: RetrievalQA can be sensitive if the 'llm' or 'retriever'
-    # are misconfigured. Ensure:
-    # - Context Window: LLM context never contains PII or secrets from retrieved docs.
-    # - Prompt Injection: While RetrievalQA handles some aspects, custom prompts
-    #   should be carefully constructed to resist prompt injection.
     fact_qa = RetrievalQA.from_chain_type(
         llm=llm,
-        chain_type="stuff", # "stuff" chain type puts all documents into one prompt.
-                             # Ensure config.AGENT_RETRIEVER_K and document size don't exceed LLM context window.
+        chain_type="stuff",
         retriever=memory_retriever,
-        return_source_documents=False, # Set to True for debugging; False for production to reduce data leakage.
+        return_source_documents=False,
     )
 
-    # 4) Construct the list of Tools
-    # SECURITY NOTE: Each Tool object MUST have a narrowly defined scope and
-    # a clear input/output schema. Avoid "generic shell" tools.
-    tools = [
-        Tool(
-            name="DuckDuckGo Search",
-            func=search.run,
-            description="Use this to look up live information. Input should be a concise search query."
-        ),
-        Tool(
-            name="LocalFactSheet",
-            func=lambda q: fact_qa.run(q), # Lambda for compatibility with Tool.func signature
-            description="Answer detailed questions about Zira, its capabilities, and configuration from the local fact sheet. Input should be a question."
-        ),
-    ]
+    tools: list[Tool] = []
 
-    # SECRET ROTATION / EXPIRATION AWARENESS:
-    # If using external LLM services or embedding APIs that require direct API keys
-    # beyond what LangChain handles internally via env vars (e.g., custom API clients),
-    # ensure their usage here includes:
-    # - Environment Variable Loading (already covered by Config)
-    # - Mechanisms for regular key rotation (e.g., Kube secrets, HashiCorp Vault)
-    # - Awareness of key expiration dates and handling of expired key errors.
-    # (No direct code changes here as it's typically external to this file.)
+    # Tool #1: Live search
+    tools.append(
+        Tool(
+            name="duckduckgo_search",
+            func=lambda query: ddg.run(query) if isinstance(query, str) else "Invalid query format.",
+            description=(
+                "Use this tool for live web searches. "
+                "Input must be a single-line string query (e.g., 'latest Python release')."
+            )
+        )
+    )
+
+    # Tool #2: Local fact-sheet QA
+    def local_factsheet_tool(query: str) -> str:
+        if not isinstance(query, str) or not query.strip():
+            return "Please provide a non-empty question."
+        # (You could add further sanitization on `query` if desired)
+        return fact_qa.run(query)
+
+    tools.append(
+        Tool(
+            name="local_factsheet",
+            func=local_factsheet_tool,
+            description=(
+                "Answers specific questions about human rights from the local human rights fact sheet. "
+                "Use this only for queries explicitly related to human rights. "
+                "Input should be a single-line question."
+            )
+        )
+    )
 
     return tools
-

@@ -1,4 +1,4 @@
-# core/config.py
+#core/config.py
 
 """
 Centralized configuration manager for Zira.
@@ -13,6 +13,7 @@ import os
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 import logging
+from pathlib import Path
 
 class Config:
     """
@@ -25,6 +26,7 @@ class Config:
 
         # ── API Keys ──────────────────────────────────────────────────────────
         self.GOOGLE_API_KEY = self._get_env_var("GOOGLE_API_KEY", required=True)
+        self.OPENWEATHER_API_KEY = self._get_env_var("OPENWEATHER_API_KEY", required=True)
 
         # ── LLM Configuration ─────────────────────────────────────────────────
         self.LLM_MODEL = self._get_env_var("LLM_MODEL", "gemini-2.5-flash-preview-05-20")
@@ -57,9 +59,9 @@ class Config:
         self.ASSISTANT_NAME = self._get_env_var("ASSISTANT_NAME", "Zira")
         self.ASSISTANT_GREETING = self._get_env_var(
             "ASSISTANT_GREETING",
-            "Hello, I am Zira. Type 'enable voice mode' to use voice commands, or type your command."
+            "Systems online. I am Zira. How may I assist you today, Alex? Type 'enable voice mode' when you're ready to speak to me."
         )
-        self.ASSISTANT_FAREWELL = self._get_env_var("ASSISTANT_FAREWELL", "Goodbye!")
+        self.ASSISTANT_FAREWELL = self._get_env_var("ASSISTANT_FAREWELL", "Going silent. You know where I am if you need me.")
         self.ASSISTANT_SYSTEM_PROMPT = self._get_env_var(
             "ASSISTANT_SYSTEM_PROMPT",
             (
@@ -71,10 +73,9 @@ class Config:
 
         # ── Logging Configuration ─────────────────────────────────────────────
         raw_log_dir = self._get_env_var("LOG_DIRECTORY", "log")
-        # Canonicalize and ensure within project root
         abs_log_dir = os.path.realpath(raw_log_dir)
-        project_root = os.path.realpath(os.getcwd())
-        if not abs_log_dir.startswith(project_root):
+        project_root = Path(os.getcwd()).resolve()
+        if not Path(abs_log_dir).resolve().is_relative_to(project_root):
             raise RuntimeError(f"LOG_DIRECTORY must be inside the project directory: {raw_log_dir}")
         self.LOG_DIRECTORY = abs_log_dir
 
@@ -93,7 +94,7 @@ class Config:
             "STT_PREFERRED_MICS",
             "Realtek(R) Audio,HD Audio Mic,Microphone,Hands-Free HF Audio"
         )
-        self.STT_PREFERRED_MICS = stt_mics.split(',')
+        self.STT_PREFERRED_MICS = [m.strip() for m in stt_mics.split(',') if m.strip()]
 
         self.STT_PUSH_TO_TALK_KEY = self._get_env_var("STT_PUSH_TO_TALK_KEY", "ctrl")
 
@@ -105,14 +106,21 @@ class Config:
             "TTS_PYTTSX3_VOICES",
             "Microsoft Edge,Zira,David"
         )
-        self.TTS_PYTTSX3_VOICES = tts_voices.split(',')
+        self.TTS_PYTTSX3_VOICES = [v.strip() for v in tts_voices.split(',') if v.strip()]
+        
+        # New: Add TTS_ENABLED flag, default to True based on your requirement
+        raw_tts_enabled = self._get_env_var("TTS_ENABLED", "True").lower()
+        self.TTS_ENABLED = raw_tts_enabled == "true"
+
 
         # ── Agent Tools Configuration ─────────────────────────────────────────
-        raw_fact_sheet = self._get_env_var("AGENT_FACT_SHEET_PATH", "fact_sheet.txt")
-        abs_fact_sheet = os.path.realpath(raw_fact_sheet)
-        if not abs_fact_sheet.startswith(project_root):
-            raise RuntimeError(f"AGENT_FACT_SHEET_PATH must be inside the project directory: {raw_fact_sheet}")
-        self.AGENT_FACT_SHEET_PATH = abs_fact_sheet
+        raw_fact_sheet = self._get_env_var("AGENT_FACT_SHEET_PATH", "data/fact_sheet.txt")
+        if os.path.isabs(raw_fact_sheet):
+            raise RuntimeError(f"AGENT_FACT_SHEET_PATH must be a relative path under project directory: {raw_fact_sheet}")
+        abs_fact_sheet = os.path.realpath(os.path.join(os.getcwd(), raw_fact_sheet))
+        if not Path(abs_fact_sheet).resolve().is_relative_to(Path(os.getcwd()).resolve()):
+            raise RuntimeError(f"AGENT_FACT_SHEET_PATH must reside in project directory: {raw_fact_sheet}")
+        self.AGENT_FACT_SHEET_PATH = raw_fact_sheet
 
         self.AGENT_EMBEDDING_MODEL = self._get_env_var("AGENT_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
@@ -133,6 +141,36 @@ class Config:
             self.AGENT_RETRIEVER_K = int(raw_retriever_k)
         except ValueError:
             raise RuntimeError("Invalid AGENT_RETRIEVER_K; must be an integer.")
+        
+        # New agent configuration parameters
+        raw_max_iterations = self._get_env_var("AGENT_MAX_ITERATIONS", 10)
+        try:
+            self.AGENT_MAX_ITERATIONS = int(raw_max_iterations)
+        except ValueError:
+            raise RuntimeError("Invalid AGENT_MAX_ITERATIONS; must be an integer.")
+
+        self.AGENT_EARLY_STOPPING_METHOD = self._get_env_var("AGENT_EARLY_STOPPING_METHOD", "force")
+
+        self.OPENWEATHER_BASE_URL = self._get_env_var(
+            "OPENWEATHER_BASE_URL",
+            "https://api.openweathermap.org/data/2.5/weather"
+        )
+        # Enforce HTTPS
+        if not self.OPENWEATHER_BASE_URL.startswith("https://"):
+            raise RuntimeError("OPENWEATHER_BASE_URL must begin with 'https://'")
+
+        # ── Bookmarks File Path ───────────────────────────────────────────────
+        raw_bookmarks = self._get_env_var("BOOKMARKS_FILE_PATH", "data/bookmarks.json")
+        if os.path.isabs(raw_bookmarks):
+            raise RuntimeError(f"BOOKMARKS_FILE_PATH must be a relative path under project directory: {raw_bookmarks}")
+        abs_bookmarks = os.path.realpath(os.path.join(os.getcwd(), raw_bookmarks))
+        if not Path(abs_bookmarks).resolve().is_relative_to(Path(os.getcwd()).resolve()):
+            raise RuntimeError(f"BOOKMARKS_FILE_PATH must reside in project directory: {raw_bookmarks}")
+        self.BOOKMARKS_FILE_PATH = raw_bookmarks
+        
+        # Additional root data directory for broader use
+        self.ZIRA_DATA_ROOT = self._get_env_var("ZIRA_DATA_ROOT", "data")
+
 
     def _get_env_var(self, key: str, default=None, required: bool = False):
         """
@@ -151,8 +189,7 @@ class Config:
         """
         Initializes and returns the LangChain LLM instance.
 
-        # TODO: In production, replace this static GOOGLE_API_KEY usage with
-        # fetching a short-lived token from a vault or secrets manager.
+        In production, replace static GOOGLE_API_KEY usage with a short‐lived token from a vault.
         """
         if not self.GOOGLE_API_KEY:
             raise RuntimeError("GOOGLE_API_KEY is not set in environment variables.")

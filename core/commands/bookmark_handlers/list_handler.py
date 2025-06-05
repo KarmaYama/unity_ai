@@ -1,3 +1,5 @@
+#core/commands/bookmark_handers/list_handler.py
+
 from colorama import Fore, Style
 from core.tts import speak # Uses config internally
 

@@ -1,12 +1,16 @@
+#core/commands/bookmark_storage.py
+
+# core/commands/bookmark_storage.py
+
 import json
 import os
 import asyncio
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from colorama import Fore, Style
-from core.config import Config # For logging and potentially config-driven paths
-
-# Path to the bookmarks JSON file (relative to project root; can make absolute if preferred)
-BOOKMARKS_FILE = "bookmarks.json"
+from core.config import Config
+from tools.agent_tools import _ALLOWED_DATA_ROOT, _is_safe_path  # Import path validation helpers
 
 def _datetime_now_str() -> str:
     """
@@ -22,7 +26,7 @@ class BookmarkStorage:
     and managing the JSON file.
 
     Security Considerations:
-    - Atomic Writes: Uses temp file + os.replace() to prevent data corruption
+    - Atomic Writes: Uses temp file + os.replace() (or pathlib.replace()) to prevent data corruption
       from partial writes if the application crashes during a save.
     - Strict File Permissions: Sets 0o600 (read/write only for owner) on the
       bookmarks file and its backups to restrict unauthorized access.
@@ -31,12 +35,46 @@ class BookmarkStorage:
     - Concurrent Access Protection: Uses asyncio.Lock to prevent race conditions
       during file reads/writes, ensuring data integrity.
     - UTF-8 Encoding: Ensures proper handling of various characters without corruption.
+    - Path Validation: Ensures the bookmark file path is canonicalized and restricted
+      to a safe data directory, preventing path traversal vulnerabilities.
     """
 
     def __init__(self, logger, config: Config):
         self.logger = logger
         self.config = config
-        self.bookmarks_path = BOOKMARKS_FILE # Can be made configurable via self.config if preferred
+
+        # Retrieve configured path (expecting a relative path under _ALLOWED_DATA_ROOT)
+        configured_path = self.config.BOOKMARKS_FILE_PATH
+        if not isinstance(configured_path, str) or not configured_path.strip():
+            raise RuntimeError("Config.BOOKMARKS_FILE_PATH must be a non-empty string.")
+
+        # Prevent absolute paths by normalizing
+        if os.path.isabs(configured_path):
+            raise RuntimeError(
+                f"Bookmark file path '{configured_path}' must be relative to the allowed data directory."
+            )
+
+        # Construct the full absolute path relative to _ALLOWED_DATA_ROOT
+        abs_path = os.path.join(_ALLOWED_DATA_ROOT, configured_path)
+        # Canonicalize for consistent comparison and safety
+        self.bookmarks_path = os.path.realpath(abs_path)
+
+        # Validate that bookmarks_path resides under the allowed data root
+        if not _is_safe_path(_ALLOWED_DATA_ROOT, self.bookmarks_path, self.logger):
+            raise RuntimeError(
+                f"Bookmark file path '{configured_path}' resolves to an unsafe location: {self.bookmarks_path}. "
+                "It must be within the allowed data directory."
+            )
+        self.logger.info("Bookmark file path set to: %s", self.bookmarks_path)
+
+        # Ensure parent directory exists with restrictive permissions (0o700)
+        parent_dir = os.path.dirname(self.bookmarks_path)
+        try:
+            os.makedirs(parent_dir, mode=0o700, exist_ok=True)
+            os.chmod(parent_dir, 0o700)
+        except Exception as e:
+            self.logger.error("Failed to create or lock down directory '%s': %s", parent_dir, e, exc_info=True)
+            raise
 
         # Async lock to prevent concurrent reads/writes, crucial for data integrity
         self._file_lock = asyncio.Lock()
@@ -49,7 +87,7 @@ class BookmarkStorage:
         """
         try:
             async with self._file_lock:
-                # Security: Ensure file is opened in read mode ('r')
+                # Security: Open in read mode only
                 with open(self.bookmarks_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     return data
@@ -57,13 +95,12 @@ class BookmarkStorage:
             self.logger.info("Bookmarks file not found at %s. Starting with empty bookmarks.", self.bookmarks_path)
             return {}
         except json.JSONDecodeError:
-            # Security: Handle corrupted JSON by creating a backup and starting fresh.
-            # This prevents infinite loops or crashes due to malformed data.
+            # Corrupted JSON: back it up and start fresh
             bak_name = f"{self.bookmarks_path}.{_datetime_now_str()}.bak"
             self.logger.warning(
                 "Could not decode %s. Renaming to %s and starting empty.",
                 self.bookmarks_path,
-                bak_name
+                bak_name,
             )
             print(
                 Fore.YELLOW
@@ -71,54 +108,61 @@ class BookmarkStorage:
                 + Style.RESET_ALL
             )
             try:
+                # Atomic rename of corrupted file
                 os.replace(self.bookmarks_path, bak_name)
-                # Security: Set strict permissions on the backup as well
                 os.chmod(bak_name, 0o600)
             except Exception as rename_err:
-                self.logger.error("Failed to rename corrupted JSON: %s", rename_err, exc_info=True)
+                self.logger.error("Failed to rename corrupted JSON '%s' → '%s': %s", self.bookmarks_path, bak_name, rename_err, exc_info=True)
             return {}
         except Exception as e:
             self.logger.error("Unexpected error loading bookmarks from %s: %s", self.bookmarks_path, e, exc_info=True)
             print(Fore.RED + f"Error loading bookmarks: {e}" + Style.RESET_ALL)
-            return {} # Return empty to allow app to continue
-            
+            return {}
 
     async def save_bookmarks(self, bookmarks: dict):
         """
         Atomically writes bookmarks to the JSON file (UTF-8, ensure_ascii=False).
-        Uses a temp file + os.replace to avoid partial writes, then sets file mode to 0o600.
+        Uses a temp file + os.replace() to avoid partial writes, then sets file mode to 0o600.
         """
-        tmp_path = f"{self.bookmarks_path}.tmp"
+        tmp_path = None
         try:
             async with self._file_lock:
-                # Security: Write to a temporary file first
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(bookmarks, f, ensure_ascii=False, indent=4)
+                # Write to a secure temporary file in the same directory
+                parent_dir = os.path.dirname(self.bookmarks_path)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", 
+                    encoding="utf-8", 
+                    dir=parent_dir, 
+                    delete=False,
+                    prefix="._bookmarks_tmp_",
+                    suffix=".json"
+                ) as tmp_file:
+                    tmp_path = tmp_file.name
+                    # Dump JSON with indent for readability
+                    json.dump(bookmarks, tmp_file, ensure_ascii=False, indent=4)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
 
-                # Security: Atomically replace the old file with the new, fully written one
+                # Atomic replace old file with new one
                 os.replace(tmp_path, self.bookmarks_path)
 
-                # Security: Restrict permissions on the new bookmarks file to owner read/write
+                # Restrict permissions on the new bookmarks file
                 try:
                     os.chmod(self.bookmarks_path, 0o600)
                 except Exception as chmod_err:
-                    # Log but do not fail if chmod fails, as the file was still saved.
                     self.logger.warning(
-                        "Could not set permissions on %s: %s",
-                        self.bookmarks_path,
-                        chmod_err
+                        "Could not set permissions on '%s': %s", self.bookmarks_path, chmod_err
                     )
 
         except Exception as e:
             self.logger.error("Error saving bookmarks to %s: %s", self.bookmarks_path, e, exc_info=True)
             print(Fore.RED + f"Error saving bookmarks: {e}" + Style.RESET_ALL)
-            # Re-raise to ensure the calling command handler knows saving failed
-            raise 
+            raise
         finally:
-            # Clean up the temporary file if it somehow wasn't replaced (e.g., if os.replace failed)
-            if os.path.exists(tmp_path):
+            # Clean up the temporary file if it still exists (e.g., if os.replace failed)
+            if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
                 except Exception as cleanup_err:
-                    self.logger.error("Failed to clean up temp bookmark file %s: %s", tmp_path, cleanup_err)
+                    self.logger.error("Failed to clean up temp bookmark file '%s': %s", tmp_path, cleanup_err)
 
